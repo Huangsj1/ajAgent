@@ -2,7 +2,7 @@
 
 一个通过逐阶段实现来学习 agent 与 agent harness 的项目。使用 DeepSeek / OpenAI GPT，自行实现主循环、工具执行、上下文管理和任务协调。
 
-当前已完成 **Stage 0 和 Stage 1**：uv 环境、配置模板，以及自行实现的 DeepSeek 最小工具调用循环。真实模型演示与 21 项离线测试已通过。
+当前已完成 **Stage 0–2**：保留最小教学循环，并提供 DeepSeek / OpenAI 双厂商适配、四个只读工具与可靠错误处理。54 项离线测试通过，两家模型的真实搜索/读取演示通过。
 
 - [阶段 TODO 与验收标准](docs/TODO.md)
 - [架构设计与主要流程图](docs/architecture.md)
@@ -22,17 +22,17 @@ uv run python --version
 uv run python -c "import httpx, pytest, tomllib; print('Environment ready')"
 ```
 
-无需手动激活虚拟环境，后续命令使用 `uv run` 即可。依赖版本由 `uv.lock` 锁定；uv 缓存放在被忽略的 `.uv-cache/`。当前只安装 HTTP 客户端 `httpx` 和开发测试工具 `pytest`，没有 Agent SDK。
+无需手动激活虚拟环境，后续命令使用 `uv run` 即可。依赖版本由 `uv.lock` 锁定；uv 缓存放在被忽略的 `.uv-cache/`。运行依赖是 `httpx` 和参数校验库 `jsonschema`，测试使用 `pytest`，没有 Agent SDK。项目通过 hatchling 安装为本地包，提供 `uv run ajagent` 入口。
 
 ## 本地配置
 
 本机已生成 [config.local.toml](config.local.toml)。直接在对应小节填写：
 
 - `[deepseek]` 的 `api_key` 和 `model`：Stage 1 使用。
-- `[openai]` 的 `api_key` 和 `model`：Stage 2 使用；目前可以留空。
+- `[openai]` 的 `api_key` 和 `model`：使用 GPT 时填写；只运行 DeepSeek 时可留空。
 - `[embedding]` 的 `model`：Stage 3 再配置，复用 OpenAI 凭据。
 
-模型 ID 留空，避免提前绑定不适用于账户的型号。`[runtime]` 默认选择 `deepseek`、工作目录 `.`、最多 8 步、请求超时 30 秒。Stage 1 已读取并校验 DeepSeek 配置；只有运行 agent 命令才会发送 API 请求。workspace 预留给 Stage 2 文件工具，当前不会读取工作目录内容。
+模板模型 ID 留空，用户在本地文件中选择自己的模型。`[runtime]` 默认选择 `deepseek`、工作目录 `.`、最多 8 步、请求超时 30 秒。Stage 2 按 provider 读取对应凭据与模型；只有运行 agent 命令才会发送 API 请求。workspace 限定文件和数据库工具能访问的目录，相对路径从当前工作目录解析。
 
 新克隆的仓库不包含本地配置，只需首次执行（不要覆盖已填好的配置）：
 
@@ -55,7 +55,9 @@ git check-ignore config.local.toml
 | 运行 provider / workspace | `AJAGENT_PROVIDER` / `AJAGENT_WORKSPACE` |
 | 步数 / 超时（秒） | `AJAGENT_MAX_STEPS` / `AJAGENT_TIMEOUT` |
 
-Stage 1 实现 DeepSeek key/model、运行 provider、步数和超时的环境变量覆盖；OpenAI 与 workspace 变量在后续阶段接入。CLI 支持 `--config`、`--model`、`--max-steps`、`--timeout`；目前只接受 DeepSeek + chat_completions。
+上述覆盖规则均已在 Stage 2 实现。CLI 支持 `--config`、`--provider`、`--model`、`--workspace`、`--max-steps`、`--timeout`；不支持的 provider 参数或 api_mode 会报错，不会自动切换模型。
+
+额外的 runtime 参数：`tool_timeout=5` 秒（`AJAGENT_TOOL_TIMEOUT`），`max_output_chars=6000`（`AJAGENT_MAX_OUTPUT_CHARS`，最少 1000）。旧本地配置无需修改，未填写时使用默认值。
 
 endpoint 和 api_mode 保留在各厂商配置段。日志打印 provider/model、工具名称及演示结果、终止状态，不打印完整配置、认证头或 key。
 
@@ -81,8 +83,58 @@ uv run pytest -q
 
 实现使用非流式、关闭 thinking 的请求。assistant 消息原样保留以续接工具结果，但不打印 reasoning 内容。参考 [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/) 与 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)。
 
+## 运行 Stage 2
+
+同一任务切换 provider 即可（每条命令是新会话）：
+
+```bash
+uv run ajagent --provider deepseek --workspace tests/fixtures/workspace "先搜索 study，再读取找到的文件，回答学习总时长并标注行号。"
+uv run ajagent --provider openai --workspace tests/fixtures/workspace "先搜索 study，再读取找到的文件，回答学习总时长并标注行号。"
+uv run ajagent --help
+```
+
+已验证 `deepseek-flash` 与 `gpt-6-luna` 均执行 search_files → read_file，回答 60 分钟并引用 `plan.md:4`。
+
+| Provider | 默认 endpoint | api_mode | 续接内容 |
+| --- | --- | --- | --- |
+| deepseek | `https://api.deepseek.com` | `chat_completions` | assistant 消息及 tool_call_id 对应结果 |
+| openai | `https://api.openai.com/v1` | `responses` | 原始 output items 和 function_call_output |
+
+模型 ID 必须与所选接口兼容。DeepSeek 默认关闭 thinking，可在 `[deepseek]` 设置 `thinking="enabled"`；该模式的续接字段在离线测试中验证，真实演示使用默认模式。OpenAI 使用 `store=false`，在内存中保留 reasoning/opaque items，不打印它们。参考 [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling) 与 [Responses migration](https://developers.openai.com/api/docs/guides/migrate-to-responses)。
+
+| 工具 | 参数 | 返回与限制 |
+| --- | --- | --- |
+| `list_files` | directory（默认 `.`） | 最多 100 个路径，截断有标记 |
+| `search_files` | query、directory | 不区分大小写的字面量搜索；最多扫描 1000 个文件、返回 50 条匹配；含路径/行号 |
+| `read_file` | path、start_line、max_lines | UTF-8 文本；默认 100 行，最多 200 行；文件上限 1 MB |
+| `query_sqlite` | path、query、max_rows | 只读连接 + SQL 操作限制；默认 50 行、最多 100 行 |
+
+文件工具排除隐藏路径（含 `.env`、`.ajagent/`）、`config.local.toml`、本次使用的配置文件及符号/硬链接；路径必须在 workspace 内。非隐藏文件中的内容仍会发送给所选模型，因此演示默认指向无秘密的 fixture 目录。
+
+返回包含 `ok/data/error/sources`，空搜索/空查询返回空数据和空来源，不代表结论成立。总结果超过字符限额时返回带 `truncated` 的预览并移除可能不完整的 sources，模型应缩小范围重新读取。Stage 2 只提供来源位置，自动引用验证属于 Stage 3。
+
+SQLite 演示可在临时目录生成数据库：
+
+```bash
+uv run python - <<'PYTHON'
+from pathlib import Path
+import sqlite3
+import tempfile
+workspace = Path(tempfile.mkdtemp(prefix="ajagent-demo-"))
+with sqlite3.connect(workspace / "study.db") as connection:
+    connection.executescript(Path("tests/fixtures/workspace/demo.sql").read_text())
+print(workspace)
+PYTHON
+# Replace /path/printed/above with the printed directory.
+uv run ajagent --workspace /path/printed/above "查询 study.db 中 study 表，汇总学习分钟数。"
+```
+
+Stage 2 的 API 临时错误（429、5xx、网络失败）最多重试两次，退避 0.5/1 秒；400、401 等立即失败。重试只发生在 HTTP 层，不重新执行已经完成的工具。文件扫描和 SQL 提供合作式超时，HTTP 超时按网络操作计；当前没有整个任务的硬时限。
+
+连续三轮相同工具批次（规范化参数与结果均相同，忽略调用 ID）以 `no_progress` 停止，第二轮会提示换策略；不同调用仍由 `max_steps` 限制。`completed` 表示模型给出最终文本，不保证任务事实正确。其余状态返回退出码 1；暂无会话持久化或自动恢复。
+
 ## 阅读代码与下一步
 
-先看 [run_agent](examples/minimal_agent.py)，顺着 messages → HTTP 请求 → tool_calls → execute_tool → tool result → 下一轮阅读，再看配置与 CLI。脚本共 122 行非空代码（包含注释），没有隐藏在库中的 agent 循环。
+先看 [run_agent](examples/minimal_agent.py)，顺着 messages → HTTP 请求 → tool_calls → execute_tool → tool result → 下一轮阅读，再看配置与 CLI。脚本保持在 50–150 行非空代码范围内（包含注释），没有隐藏在库中的 agent 循环。
 
-下一阶段将提取统一配置、双厂商适配和可靠工具层；当前保留两种简单工具，不提前加入 RAG、持久状态或多 agent。
+Stage 2 从 [core/loop.py](src/ajagent/core/loop.py) 开始阅读，然后看 models 的协议适配和 tools 的校验/执行。当前测试位于 `tests/test_minimal_loop.py` 与 `tests/test_stage2.py`，使用 MockTransport 和临时文件，不依赖真实 key 或网络。下一阶段实现 RAG 和引用验证。

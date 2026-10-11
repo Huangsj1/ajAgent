@@ -32,3 +32,27 @@
 **失败场景：** 通过假模型连续返回工具调用，在第 8 次请求后得到 step_limit；不是 completed，也不会额外发送第 9 次请求。HTTP 401 与超时通过离线传输模拟，错误文本不包含响应体或密钥。
 
 **下一步：** Stage 2 提取模型适配、配置与工具层；继续保留此教学脚本。
+
+
+## Stage 2 — 2026-10-11
+
+**已完成：** src 包、ajagent CLI、双厂商适配、四个只读工具、schema 校验、错误隔离、有界重试、输出限制和重复批次停止。保留用户编辑过的 Stage 1 脚本。
+
+**学到的内容：** 可以统一模型返回的语义，但不能把不同 wire format 简单混在一起。OpenAI output item 的 id 不等于函数调用 call_id；续接必须保存原始 reasoning items。DeepSeek 保留完整 assistant 消息。
+
+**设计取舍：** 共用 HTTP 重试，不重跑 loop；先用 Python 字面量文件搜索减少系统依赖；测试集中放在 test_stage2.py，规模扩大后再按模块拆分。使用 jsonschema 校验参数，不建设工具框架。
+
+**离线验证：** `uv run pytest -q`：54 passed。涵盖两家适配器、同轮失败/成功工具、续接字段、HTTP/网络重试、配置覆盖、工作目录/密钥文件/链接限制、SQL 只读与超时、空结果、结果截断及无进展终止。
+
+**真实验证：** 分别执行 `uv run ajagent --provider deepseek --workspace tests/fixtures/workspace "先用 search_files 搜索 study，再用 read_file 读取找到的文件。根据文件回答学习总时长，标注文件名和行号。"` 及同命令 `--provider openai`。
+
+| 模型 | 工具轨迹 | 结果 | 本次返回的用量 |
+| --- | --- | --- | --- |
+| deepseek-flash | search_files → read_file | completed；60 分钟；plan.md 第 4 行 | input 2598 / output 200 |
+| gpt-6-luna | search_files → read_file | completed；60 分钟；plan.md 第 4 行 | input 1484 / output 61 |
+
+用量只记录本次演示，不作为性能比较或费用推算。未修改本地凭据，未打印原始 API 消息。真实演示之后只调整了结果长度边界与非有限 SQL 数值序列化，均通过离线回归。
+
+**失败与边界：** 模拟 401 只请求一次；429/5xx/网络超时最多三次尝试；工具执行不随 HTTP 重试重复。三个相同批次无新结果时 no_progress，改变查询但无限调用时受 max_steps 限制。
+
+**下一步：** Stage 3 引入 RAG 索引与严格来源 ID 校验。目前的路径/行号引用仍需用户核对语义。

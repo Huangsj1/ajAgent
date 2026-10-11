@@ -5,17 +5,19 @@ flowchart TD
     CLI[CLI and local configuration] --> H[Initialize messages]
     H --> B{Steps remaining?}
     B -->|No| L[Return step_limit]
-    B -->|Yes| M[DeepSeek chat/completions]
+    B -->|Yes| M[DeepSeek Chat Completions / OpenAI Responses]
     M -->|Request or protocol error| E[Report failure]
     M --> D{Output type}
-    D -->|Tool calls| T[Validate and execute add / lookup_note]
+    D -->|Tool calls| T[Validate and execute read-only workspace tools]
     T --> R[Append each result with tool_call_id]
-    R --> B
+    R --> N{Three identical batches?}
+    N -->|No| B
+    N -->|Yes| P[Return no_progress]
     D -->|Final text| F[Return completed]
     D -->|Empty / refusal / incomplete| E
 ```
 
-> 当前已实现 Stage 0、Stage 1。上图对应 `examples/minimal_agent.py` 的实际流程；以下是后续逐步演进的目标架构。
+> 当前已实现 Stage 0–2。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
 
 ## 目标流程
 
@@ -115,7 +117,7 @@ flowchart TD
 
 ## 6. 配置与本地数据
 
-已建立 `config.example.toml` 和被 `.gitignore` 排除的 `config.local.toml`，模板 key/model 为空，本地凭据由用户自行填写。Stage 1 已内联实现 DeepSeek 配置加载，其他厂商与 embedding 配置预留；模板结构为 `[deepseek]`、`[openai]`、`[embedding]`、`[runtime]`，各厂商分别持有 key、model、api_mode。
+已建立 `config.example.toml` 和被 `.gitignore` 排除的 `config.local.toml`，模板 key/model 为空，本地凭据由用户自行填写。Stage 2 已在 config.py 实现双厂商配置加载，embedding 配置预留；模板结构为 `[deepseek]`、`[openai]`、`[embedding]`、`[runtime]`，各厂商分别持有 key、model、api_mode。
 
 生成数据集中保存在忽略的 `.ajagent/` 下：
 
@@ -141,7 +143,7 @@ Stage 7 coordinator 顺序调用独立上下文的 researcher/writer/reviewer/re
 
 ## 8. 当前范围与后续维护
 
-Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 以后模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
+Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 起的 RAG、记忆、harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
 
 暂不做 Web UI、分布式执行、企业级权限、自动部署、复杂插件市场和多层 agent 递归。优先保持可读、可调试、可验证；新的模块应解决已遇到的问题。
 
@@ -158,4 +160,22 @@ Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置
 | `main` | 命令解析、HTTP 客户端生命周期、错误摘要和退出码 |
 | `tests/test_minimal_loop.py` | MockTransport 模拟模型响应，核对实际 HTTP 请求里的消息序列 |
 
-当前不提供文件权限策略、日志持久化、会话恢复或自动重试。step_limit 表示未完成；工具错误可以进入下一轮，但网络/协议错误直接结束。本阶段不执行隐藏推理内容，只保留 API 续接所需消息。
+Stage 1 示例不提供文件权限策略、日志持久化、会话恢复或自动重试。step_limit 表示未完成；工具错误可以进入下一轮，但网络/协议错误直接结束。本阶段不执行隐藏推理内容，只保留 API 续接所需消息。
+
+
+## 10. Stage 2 实现映射
+
+- `config.py`：dataclass 保存一次运行配置，key 不参与 repr；选择厂商后只读取其密钥，CLI > 环境变量 > 文件 > 默认值。
+- `models/base.py`：ModelClient 协议和 HTTP 重试；HTTPModel 只复用传输机制，不统一 wire format。失败摘要不包含原始 API 响应体。
+- `models/deepseek.py`：Chat Completions schema、消息、reasoning_content 与 tool_call_id 映射。
+- `models/openai.py`：Responses schema、output items、call_id 与 function_call_output；store=false，完整回传 opaque reasoning。
+- `core/types.py`：ToolCall、ModelTurn、ToolResult、RunResult；usage 统一为 input_tokens/output_tokens。
+- `core/loop.py`：唯一包内循环，批次顺序执行、错误回填、用量累计、步数和重复批次终止。独立 Stage 1 示例仅作教学保留。
+- `tools/base.py`、`registry.py`：普通字典注册、JSON Schema 校验、结构化结果和字符上限；意外工具异常隔离为 tool_error。
+- `tools/files.py`：workspace 路径边界、配置/隐藏路径与链接排除、UTF-8 行读取、字面量扫描；来源是文件路径和行号。
+- `tools/database.py`：只读 URI + authorizer，禁止写入/ATTACH/PRAGMA；progress handler 控制查询时间，fetchmany 控制结果行数。
+- `cli.py`：组合配置、模型与 registry，输出简短工具状态、最终答案与 token 数；不持久保存历史。
+
+单次结果默认限制 6000 字符；截断会提供重新缩小查询的提示，丢弃不完整的 sources。连续三轮相同批次/相同结果判为无进展，不等价于通用语义进度检测。文件/SQL 超时是合作式机制，本阶段没有任意工具强制中断或安全沙箱。
+
+验证：`tests/test_stage2.py` 与 Stage 1 测试合计 54 项通过。两家真实模型均完成 fixture 文件搜索和读取，证明适配器实际闭环；这不代表所有模型/参数都支持相同协议。参考 [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling) 和 [Responses migration](https://developers.openai.com/api/docs/guides/migrate-to-responses)。

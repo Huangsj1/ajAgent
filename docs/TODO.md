@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料核对日期：2026-10-11。状态：Stage 0、Stage 1 已完成并验证；Stage 2 及后续实现尚未开始。
+资料核对日期：2026-10-11。状态：Stage 0–2 已完成并验证；Stage 3 及后续实现尚未开始。
 
 ## 1. 项目目标与约定
 
@@ -136,46 +136,44 @@ tests/
 
 **目标：** 将最小循环迁入包，支持 DeepSeek / GPT，工具错误不再直接摧毁整个任务。
 
-- [ ] S2.1 从 Stage 1 提取 `core/loop.py` 与数据结构；保留顺序执行，用函数和小 dataclass，不建设通用工作流框架。
-- [ ] S2.2 定义 `ModelClient.generate(context, tools) -> ModelTurn`；输出统一为 text、tool_calls、usage、stop_reason，同时保留协议续接必需的原始 items。
-- [ ] S2.3 实现 DeepSeek Chat Completions 与 OpenAI Responses 两个适配器；各自映射 schema、调用 ID、工具结果和续接状态。不要通过只改 base_url 来宣称支持所有 GPT。
-- [ ] S2.4 正确保留所选接口要求回传的 reasoning/opaque items，不解析成业务逻辑，也不展示为解释。对不支持的参数明确报错；不默默吞掉工具调用。
-- [ ] S2.5 用配置选择模型 ID，不硬编码“当前最好”或价格；初始不自动切模型、不在同一会话中途切 provider。
-- [ ] S2.6 定义 ToolSpec（name、description、JSON Schema、handler）和 ToolResult（ok、data、error、sources）；注册表先是普通字典。
-- [ ] S2.7 实现 `read_file`、`list_files`、`search_files`（可封装 rg）、只读 `query_sqlite`；SQL 使用演示库的只读连接并限制行数。
-- [ ] S2.8 参数校验、文件不存在、空搜索、SQL 错误、超时、过长输出分别给出可理解的结果；保留错误类型与可恢复提示。
-- [ ] S2.9 每个文件工具限制在指定 workspace，排除秘密配置与 `.ajagent/`；限制单次结果长度。简单路径解析即可，不做复杂策略语言。
-- [ ] S2.10 API 限流/临时服务错误最多重试两次并退避；认证与无效参数立即失败。模型请求重试不重放已经执行的工具副作用。
-- [ ] S2.11 用规范化参数识别连续重复的工具调用；无新信息时提示换策略，连续三次无进展则停止。先不做全局缓存。
-- [ ] S2.12 测试“单轮多个调用全部回填”“一个工具失败其他工具仍返回”“空结果不是成功证据”；两家各做一次可选真实 smoke test。
+- [x] S2.1 从 Stage 1 提取 `core/loop.py` 与数据结构；保留顺序执行，用函数和小 dataclass，不建设通用工作流框架。
+- [x] S2.2 定义 `ModelClient.generate(context, tools) -> ModelTurn`；输出统一为 text、tool_calls、usage、stop_reason，同时保留协议续接必需的原始 items。
+- [x] S2.3 实现 DeepSeek Chat Completions 与 OpenAI Responses 两个适配器；各自映射 schema、调用 ID、工具结果和续接状态。不要通过只改 base_url 来宣称支持所有 GPT。
+- [x] S2.4 正确保留所选接口要求回传的 reasoning/opaque items，不解析成业务逻辑，也不展示为解释。对不支持的参数明确报错；不默默吞掉工具调用。
+- [x] S2.5 用配置选择模型 ID，不硬编码“当前最好”或价格；初始不自动切模型、不在同一会话中途切 provider。
+- [x] S2.6 定义 ToolSpec（name、description、JSON Schema、handler）和 ToolResult（ok、data、error、sources）；注册表先是普通字典。
+- [x] S2.7 实现 `read_file`、`list_files`、`search_files`（可封装 rg）、只读 `query_sqlite`；SQL 使用演示库的只读连接并限制行数。
+- [x] S2.8 参数校验、文件不存在、空搜索、SQL 错误、超时、过长输出分别给出可理解的结果；保留错误类型与可恢复提示。
+- [x] S2.9 每个文件工具限制在指定 workspace，排除秘密配置与 `.ajagent/`；限制单次结果长度。简单路径解析即可，不做复杂策略语言。
+- [x] S2.10 API 限流/临时服务错误最多重试两次并退避；认证与无效参数立即失败。模型请求重试不重放已经执行的工具副作用。
+- [x] S2.11 用规范化参数识别连续重复的工具调用；无新信息时提示换策略，连续三次无进展则停止。先不做全局缓存。
+- [x] S2.12 测试“单轮多个调用全部回填”“一个工具失败其他工具仍返回”“空结果不是成功证据”；两家各做一次可选真实 smoke test。
 
 **文件安排（新增/重构，其余沿用）：**
 
 ```text
 src/ajagent/
 ├── __init__.py
-├── cli.py
+├── cli.py              # 程序入口
 ├── config.py
-├── core/
+├── core/               # 主流程相关内容
 │   ├── types.py
 │   └── loop.py
-├── models/
+├── models/             # 模型适配器
 │   ├── base.py
 │   ├── deepseek.py
 │   └── openai.py
-└── tools/
+└── tools/              # 工具定义与执行：registry负责注册所有tools
     ├── base.py
     ├── registry.py
     ├── files.py
     └── database.py
 tests/
-├── test_adapters.py
-├── test_loop.py
-├── test_tools.py
+├── test_stage2.py           # Adapter, loop, config, and tool checks.
 └── fixtures/                 # Synthetic API responses and a tiny workspace.
 ```
 
-**验收：** 同一个“搜索文件 → 读取 → 回答”任务可用两家模型运行；离线测试不需要 key；错误与步数上限不会导致无限循环。README 说明 endpoint、api_mode 和 model 的匹配关系。
+**验收结果（2026-10-11）：** 54 项离线测试通过（含 Stage 1）。同一任务在 deepseek-flash / gpt-6-luna 上均执行 search_files → read_file，并回答 60 分钟、引用 plan.md 第 4 行。新增 src 包和 ajagent CLI；搜索首版用 Python 字面量扫描，没有依赖 rg。无进展检测按连续相同批次实现；超时为文件扫描/SQL 合作式限制与 HTTP 操作超时，尚无全任务硬时限。
 
 ## 6. Stage 3 — RAG with Verifiable Citations
 
@@ -421,4 +419,4 @@ comparisons/README.md
 
 建议从以下范围开始：
 
-> 按 docs/TODO.md 实现 Stage 2，先阅读 docs/architecture.md 和已完成的 Stage 1 示例。保留最小教学脚本，提取模型适配与可靠工具层；不实现后续阶段。代码使用简洁英文注释，配置中不写真实 API key。完成离线验证，更新 README、architecture 和 TODO；真实 API 验证只使用已配置的厂商凭据，未运行的验证如实标注。
+> 按 docs/TODO.md 实现 Stage 3，先阅读 docs/architecture.md 和已完成的 Stage 2 模块。保留已有示例与双厂商工具循环，新增 RAG 与引用验证；不实现后续阶段。代码使用简洁英文注释，配置中不写真实 API key。完成离线验证，更新 README、architecture 和 TODO；真实 API 验证只使用已配置的厂商凭据，未运行的验证如实标注。
