@@ -1,0 +1,27 @@
+# Copy to config.local.toml and fill in credentials locally.
+# Stage 1 loads runtime and DeepSeek settings; other sections are reserved.
+
+[runtime]
+provider = "deepseek"
+workspace = "."
+max_steps = 8
+timeout = 30.0
+
+[deepseek]
+api_key = ""
+base_url = "https://api.deepseek.com"
+api_mode = "chat_completions"
+# Set a model ID supported by your account before running Stage 1.
+model = ""
+
+[openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+api_mode = "responses"
+# GPT support starts in Stage 2.
+model = ""
+
+[embedding]
+# Stage 3 reuses the OpenAI credentials above.
+provider = "openai"
+model = ""

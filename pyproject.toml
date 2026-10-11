@@ -1,0 +1,19 @@
+[project]
+name = "ajagent"
+version = "0.1.0"
+description = "Learn agent loops and harnesses step by step."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28,<0.29",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+]
+
+[tool.uv]
+# Stage 1 is a standalone script; packaging starts in Stage 2.
+package = false
+cache-dir = ".uv-cache"
