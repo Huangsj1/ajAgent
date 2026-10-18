@@ -1,5 +1,5 @@
 # Copy to config.local.toml and fill in credentials locally.
-# Stage 2 supports both providers; embedding is reserved for Stage 3.
+# RAG is optional; Qwen retrieval models run locally.
 
 [runtime]
 provider = "deepseek"
@@ -23,7 +23,12 @@ api_mode = "responses"
 # Select a GPT model that supports Responses function calling.
 model = ""
 
-[embedding]
-# Stage 3 reuses the OpenAI credentials above.
-provider = "openai"
-model = ""
+[rag]
+enabled = false
+sources = ["local", "semantic"]
+knowledge = "examples/knowledge"
+index = ".ajagent/rag-index"
+cache = ".ajagent/models"
+rerank = true
+device = "auto"
+candidates = 10

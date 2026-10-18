@@ -2,6 +2,33 @@
 
 ```mermaid
 flowchart TD
+    A[Agent / CLI] --> E{启用 RAG?}
+    E -->|否| B[基础文件与数据库工具 / 直接回答]
+    E -->|是| T[额外注册 retrieve 工具]
+    T --> D{Agent 决定是否检索}
+    D -->|否| B
+    D -->|是| S[选择 local / semantic / web]
+    S --> L[ripgrep 文本 / Tree-sitter 符号]
+    S --> V[Qwen query embedding → HNSW]
+    S --> W[DuckDuckGo 搜索摘要]
+    L & V & W --> F[去重 + Reciprocal Rank Fusion]
+    F --> R[可选 Qwen Reranker]
+    R --> O[有界证据 + URI / 行号 / warnings]
+    O --> A
+    K[文档 / 代码 / PDF] --> C[解析 → 分块 → 内容 hash]
+    C --> Q[只计算新内容的 embedding]
+    C --> X[独立 txt 正文缓存]
+    Q --> I[vectors.npy + metadata.sqlite + hnsw.index]
+    I --> V
+```
+
+
+> 当前 RAG 是可选工具；详细数据流与限制见 [RAG README](../src/ajagent/rag/README.md)。
+
+## 基础工具 CLI 流程
+
+```mermaid
+flowchart TD
     CLI[CLI and local configuration] --> H[Initialize messages]
     H --> B{Steps remaining?}
     B -->|No| L[Return step_limit]
@@ -17,7 +44,7 @@ flowchart TD
     D -->|Empty / refusal / incomplete| E
 ```
 
-> 当前已实现 Stage 0–2。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
+> 当前已实现 Stage 0–3。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
 
 ## 目标流程
 
@@ -62,14 +89,14 @@ flowchart TD
 | `core/loop.py` | 请求模型、处理整批工具调用、回填结果、判断终止；唯一主循环 | 2 |
 | `models/` | DeepSeek Chat Completions / OpenAI Responses 的字段、续接与 usage 映射 | 2 |
 | `tools/` | ToolSpec 注册与执行；文件、数据库、检索、Web、浏览器、执行、委派逐步增加 | 2–6 |
-| `rag/` | 文档解析、chunk、embedding、向量检索、证据映射和引用校验 | 3 |
+| `rag/` | 分层检索、chunk、Qwen embedding/rerank、HNSW 与增量索引 | 3 |
 | `context/` | 拼装本轮输入、预算估计、裁剪和摘要；不删除原始会话 | 4 |
 | `memory/` | JSONL 会话历史、显式长期记忆的增删查和来源记录 | 4 |
 | `harness/` | Runner 组合各组件，控制状态、策略、hooks、预算和事件；不复制 loop | 5 |
 | `extensions/` | 按需 skill 加载与可选 MCP 工具适配 | 6 |
 | `multi_agent/` | 角色配置、结构化 handoff、确定性路由、有界修订 | 7 |
 | `tasks/` | 长任务进度、检查点、反馈候选；独立选修模块 | 8 |
-| `evals/` | 固定用例与运行报告；评估成功率、证据、延迟和 token | 3 起持续完善 |
+| `evals/`（计划） | 后续固定用例与运行报告；评估成功率、证据、延迟和 token | 5 起 |
 
 依赖方向：CLI → Runner → loop/context/model/tool 接口。工具通过显式参数获得 workspace 和运行上下文，不反向导入 CLI；RAG 由 retrieval 工具调用，不能另起隐藏的 agent loop。
 
@@ -103,7 +130,7 @@ flowchart TD
 
 ## 5. RAG 与记忆的数据流
 
-**RAG：** 文档 → 带位置的 chunk → embedding → 本地索引；问题 → 同一 embedding 空间 → top-k → evidence map → 带 ID 的回答 → 引用校验。更新文档按 hash 失效旧 chunk，更换 embedding 模型重建索引。
+**RAG：** Agent 按需调用 retrieve → Local/Semantic/Web 召回 → 去重/RRF → 可选 Qwen rerank → 有界证据。Semantic 使用 Qwen query embedding 和 HNSW，索引增量更新并原子发布；正文缓存独立保存。当前最终回答引用路径/行号或 URL，不运行强制引用 guard。
 
 **短期上下文：** 当前 API 请求的工作集，受 token 预算限制。
 
@@ -117,13 +144,14 @@ flowchart TD
 
 ## 6. 配置与本地数据
 
-已建立 `config.example.toml` 和被 `.gitignore` 排除的 `config.local.toml`，模板 key/model 为空，本地凭据由用户自行填写。Stage 2 已在 config.py 实现双厂商配置加载，embedding 配置预留；模板结构为 `[deepseek]`、`[openai]`、`[embedding]`、`[runtime]`，各厂商分别持有 key、model、api_mode。
+已建立 `config.example.toml` 和被 `.gitignore` 排除的 `config.local.toml`，模板 key/model 为空，本地凭据由用户自行填写。Stage 2 已在 config.py 实现双厂商配置加载，Stage 3 在 rag/service.py 读取可选检索配置；模板结构为 `[deepseek]`、`[openai]`、`[rag]`、`[runtime]`，各厂商分别持有 key、model、api_mode。
 
 生成数据集中保存在忽略的 `.ajagent/` 下：
 
 ```text
 .ajagent/
-├── index/                    # Vectors, document hashes, embedding metadata.
+├── rag-index/                # Generations: SQLite, vectors, HNSW; cached texts.
+├── models/                   # Local Qwen weights.
 ├── sessions/                 # Original conversation history.
 ├── memory/                   # Explicit cross-session notes.
 ├── runs/<run_id>/             # Events, checkpoint, generated artifacts.
@@ -143,7 +171,7 @@ Stage 7 coordinator 顺序调用独立上下文的 researcher/writer/reviewer/re
 
 ## 8. 当前范围与后续维护
 
-Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 起的 RAG、记忆、harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
+Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 起的记忆、harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
 
 暂不做 Web UI、分布式执行、企业级权限、自动部署、复杂插件市场和多层 agent 递归。优先保持可读、可调试、可验证；新的模块应解决已遇到的问题。
 
@@ -179,3 +207,22 @@ Stage 1 示例不提供文件权限策略、日志持久化、会话恢复或自
 单次结果默认限制 6000 字符；截断会提供重新缩小查询的提示，丢弃不完整的 sources。连续三轮相同批次/相同结果判为无进展，不等价于通用语义进度检测。文件/SQL 超时是合作式机制，本阶段没有任意工具强制中断或安全沙箱。
 
 验证：`tests/test_stage2.py` 与 Stage 1 测试合计 54 项通过。两家真实模型均完成 fixture 文件搜索和读取，证明适配器实际闭环；这不代表所有模型/参数都支持相同协议。参考 [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling) 和 [Responses migration](https://developers.openai.com/api/docs/guides/migrate-to-responses)。
+
+
+## 11. Stage 3 分层实现
+
+| 模块 | 职责 |
+| --- | --- |
+| `rag/local/` | rg 精确搜索；Tree-sitter 符号与位置 |
+| `rag/semantic/chunks.py` | 文档章节、代码定义边界；PDF 文本提取 |
+| `rag/semantic/encoder.py` | 懒加载 Qwen；query instruction、last-token pooling |
+| `rag/semantic/store.py` | SQLite 元数据、独立 txt、NumPy 向量、增量 HNSW、generation 发布 |
+| `rag/web/` | 搜索引擎适配、摘要证据、URL 去重与 TTL 缓存 |
+| `rag/ranking/` | Qwen yes/no cross-encoder，最后 token logits |
+| `rag/service.py` | 配置、统一检索、多源去重/RRF、部分错误和精排 |
+| `tools/retrieval.py` | 可选 ToolSpec 与输出预算 |
+| `rag/cli.py` | 无聊天 key 的 index/search 命令 |
+
+agent CLI 的 `--rag` 控制是否额外注册工具，开启不意味着必须调用。模型权重只在实际检索/精排时加载。Web 默认不启用。backend 失败转 warnings，模型需区分“检索失败”和“确实没有证据”。
+
+详细实现、数据格式、性能边界和验证见 [RAG README](../src/ajagent/rag/README.md) 与 [新版报告](experiments/rag-validation.md)。没有全自动事实核验、索引 GC 或持久会话；后续 harness 能在现有工具接口上加入这些能力。

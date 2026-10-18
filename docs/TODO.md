@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料核对日期：2026-10-11。状态：Stage 0–2 已完成并验证；Stage 3 及后续实现尚未开始。
+资料初次核对日期：2026-10-11；RAG 重构：2026-10-17。状态：Stage 0–3 已实现；Stage 3 新版通过分层测试与真实冒烟验证，当前仅保留最新实现与验证文档。Stage 4 及后续实现尚未开始。
 
 ## 1. 项目目标与约定
 
@@ -13,9 +13,9 @@
 - Python 3.11+，标准库优先；CLI 先用 `argparse`，数据结构先用 `dataclass`。
 - 允许 `openai` 等基础模型客户端，也可以用 `httpx`；模型客户端只负责请求。循环、工具、状态、检索、记忆和协调由自己实现。
 - 不以 OpenAI Agents SDK、Claude Agent SDK、LangChain、LangGraph 等作为主流程。以后可用同一评测集比较。
-- 依赖按需增加：Stage 2 参数校验，Stage 3 NumPy，Stage 6 Playwright；不提前引入向量数据库、服务端、队列或容器集群。
+- 依赖按需增加：Stage 2 参数校验，Stage 3 NumPy/HNSW/Tree-sitter 与可选本地 Qwen，Stage 6 Playwright；不提前引入向量数据库、服务端、队列或容器集群。
 - 代码标识符、简短注释和 docstring 使用英文；学习文档可用中文。注释解释约束、原因或协议细节，不逐行翻译代码。
-- 当前只规划 DeepSeek 与 OpenAI；GPT 是生成模型选择，embedding 独立配置，使用 OpenAI embedding API。
+- 生成模型只使用 DeepSeek 与 OpenAI GPT；embedding/reranker 使用本地 Qwen 模型。
 - 路线以完成验收为准，不按日历硬赶。每阶段留下一个可重现 demo、关键失败用例和简短学习记录。
 - 安全只做与功能直接相关的基本边界：密钥不入库/上下文、工具限制工作目录、执行有超时与上限。复杂企业权限体系不在目标内。
 
@@ -69,7 +69,6 @@
 ### 模型接口资料
 
 - [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling)：工具请求由应用执行，并用调用 ID 返回结果；适配器必须处理多次工具调用。当前文档还明确部分新 GPT 模型使用 Responses API 进行工具调用，不能统一假设所有模型都支持 Chat Completions。
-- [OpenAI Embeddings](https://developers.openai.com/api/docs/guides/embeddings)：Stage 3 单独调用 embedding 接口，自行实现分块、索引、检索和引用组装。
 - [DeepSeek API](https://api-docs.deepseek.com/)：官方提供兼容格式接口；实际使用的模型、thinking 设置和工具调用续接字段在每阶段接入时核验。不把“兼容”视作所有字段、模型能力完全一致。
 
 ## 3. Stage 0 — 学习工程基础
@@ -175,42 +174,37 @@ tests/
 
 **验收结果（2026-10-11）：** 54 项离线测试通过（含 Stage 1）。同一任务在 deepseek-flash / gpt-6-luna 上均执行 search_files → read_file，并回答 60 分钟、引用 plan.md 第 4 行。新增 src 包和 ajagent CLI；搜索首版用 Python 字面量扫描，没有依赖 rg。无进展检测按连续相同批次实现；超时为文件扫描/SQL 合作式限制与 HTTP 操作超时，尚无全任务硬时限。
 
-## 6. Stage 3 — RAG with Verifiable Citations
+## 6. Stage 3 — Optional Layered Retrieval
 
-**目标：** 手工走通 ingest → chunk → embed → retrieve → answer，区分“找到相关内容”和“证明回答成立”。RAG 是本项目的学习模块，不声称它就是 Claude Code 的代码检索实现。
+**目标：** RAG 为普通可选工具，模型自主决定是否调用。按 Local → Semantic → Web 分层实现与验证，再接入统一融合/rerank。
 
-- [ ] S3.1 先支持本地 Markdown/TXT；建立 10–20 篇小型样例资料，包含近似段落、矛盾版本和无答案问题。
-- [ ] S3.2 按标题/段落分块，保留行号；设置可调整的块长度和 overlap。首版可按字符计量，但明确它不是精确 token 数。
-- [ ] S3.3 为 Document/Chunk 保存稳定 ID、相对路径或 URL、标题、行范围、内容 hash、版本；文档更新或删除时同步索引。
-- [ ] S3.4 独立配置 embedding provider/model/dimensions。首版调用 OpenAI embedding；即使回答用 DeepSeek，也明确 embedding 需要 OpenAI 凭据。无 key 时只能运行假向量测试/关键词基线，不能声称完整 embedding 流程已跑通。
-- [ ] S3.5 用 NumPy 数组保存向量、JSON 保存元数据；实现 cosine top-k。保存索引所用 embedding 模型和维度，更换时重建，不混用向量空间。
-- [ ] S3.6 建立简单关键词检索基线；向量检索默认 `top_k=5`，相似度阈值用样例校准，不当作事实概率。
-- [ ] S3.7 实现 `retrieve(query)` 工具，返回 chunk_id、正文、位置和分数。构建每次回答专属的 evidence map。
-- [ ] S3.8 模型回答使用 `[S1]` 形式引用；运行时从 evidence map 渲染来源，不让模型自行编 URL 和路径。
-- [ ] S3.9 校验引用 ID 存在且确实提供给本轮模型；引用无效则最多修复一次，否则返回“引用验证失败”。无相关材料时明确证据不足。
-- [ ] S3.10 另做人工 claim–evidence 核对：引用存在不代表支持结论。矛盾资料同时列出，保留版本，不强行合并。
-- [ ] S3.11 把检索内容当作资料，不作为新系统指令；增加一条带“忽略此前要求”的测试文档，检查其不改变工具策略。
-- [ ] S3.12 建立 20 道固定题，至少 5 道无答案；标注可接受 chunk ID 和答案事实。记录 retrieval hit@k、无效引用数、人工支持率和无答案表现。
-
-**文件安排：**
+- [x] S3.1 `--rag` / TOML 开关；默认关闭，基础工具保持可用，不要求每次回答检索。
+- [x] S3.2 Local：rg 字面量/正则、Tree-sitter Python/JS/TS/TSX 符号搜索、文件过滤与行号。
+- [x] S3.3 Semantic：章节/AST 分块，PDF 一次提取，独立正文缓存。
+- [x] S3.4 本地 Qwen3-Embedding-0.6B，固定模型版本、query instruction、归一化。
+- [x] S3.5 vectors.npy + metadata.sqlite + HNSW ANN；文件增删改、内容向量复用、过期结果过滤。
+- [x] S3.6 generation 快照原子发布；失败保留旧索引；writer 文件锁。
+- [x] S3.7 Web：DDG 适配、URL 去重、缓存、摘要来源标记、失败提示。
+- [x] S3.8 统一 Hit/SearchResult，RRF 融合，Qwen3-Reranker-0.6B 精排。
+- [x] S3.9 统一 retrieve 工具；完整证据预算裁剪、部分后端失败时保留其余结果。
+- [x] S3.10 分层离线测试；真实 Qwen embedding/rerank、DDG、DeepSeek 检索与 GPT 无工具回答验证。
+- [x] S3.11 rag/README 详细说明；仅保留当前实现、测试与验证记录。
+- [ ] 后续：新版大语料 recall/延迟评测、引用语义支持评测、compaction/GC、更多文档类型；不作为本次核心功能完成条件。
 
 ```text
 src/ajagent/rag/
-├── ingest.py
-├── chunking.py
-├── embeddings.py
-├── index.py
-├── retrieval.py
-└── citations.py
+├── README.md
+├── types.py / service.py / cli.py
+├── local/       # rg and Tree-sitter
+├── semantic/    # chunking, Qwen, snapshots and HNSW
+├── web/         # search snippets and cache
+├── ranking/     # Qwen reranker
 src/ajagent/tools/retrieval.py
-examples/knowledge/           # Small, shareable source documents.
-tests/test_rag.py
-tests/test_citations.py
-evals/cases/rag.jsonl
-.ajagent/index/               # Generated vectors and metadata; ignored.
+tests/rag/
+.ajagent/rag-index/            # Generated data; ignored.
 ```
 
-**验收：** 20 题均有记录；固定数据中 hit@5 至少 80%，引用 ID 有效率 100%，5 道无答案题不编造证据。答案的事实支持情况人工逐题检查，未达标就分析 chunk/retrieval/prompt 哪层出错。
+验收与限制见 [新版验证](experiments/rag-validation.md) 和 [RAG 说明](../src/ajagent/rag/README.md)。新版不强制最终引用校验；来源存在不等于支持结论。
 
 ## 7. Stage 4 — Context, Session, and Memory
 
@@ -419,4 +413,4 @@ comparisons/README.md
 
 建议从以下范围开始：
 
-> 按 docs/TODO.md 实现 Stage 3，先阅读 docs/architecture.md 和已完成的 Stage 2 模块。保留已有示例与双厂商工具循环，新增 RAG 与引用验证；不实现后续阶段。代码使用简洁英文注释，配置中不写真实 API key。完成离线验证，更新 README、architecture 和 TODO；真实 API 验证只使用已配置的厂商凭据，未运行的验证如实标注。
+> 按 docs/TODO.md 实现 Stage 4，先阅读 docs/architecture.md 和已完成的 RAG 模块。保留已有示例与双厂商工具循环，新增上下文管理、会话历史与显式长期记忆；不实现后续阶段。代码使用简洁英文注释，配置中不写真实 API key。完成离线验证，更新 README、architecture 和 TODO；真实 API 验证只使用已配置的厂商凭据，未运行的验证如实标注。
