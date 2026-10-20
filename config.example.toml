@@ -26,9 +26,16 @@ model = ""
 [rag]
 enabled = false
 sources = ["local", "semantic"]
-knowledge = "examples/knowledge"
-index = ".ajagent/rag-index"
+knowledge = "knowledge"
+index = "knowledge/.index"
 cache = ".ajagent/models"
 rerank = true
 device = "auto"
 candidates = 10
+local_path = "" # Empty uses the agent workspace; may be an external directory or file.
+
+[tavily]
+api_key = ""
+timeout = 30
+search_depth = "basic"
+max_content_chars = 2000

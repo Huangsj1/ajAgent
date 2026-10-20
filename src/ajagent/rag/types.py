@@ -28,3 +28,4 @@ class SearchResult:
     hits: list[Hit] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     truncated: bool = False
+    diagnostics: dict = field(default_factory=dict)

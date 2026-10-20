@@ -4,8 +4,8 @@ import json
 from jsonschema import Draft202012Validator
 from ajagent.core.types import ToolResult
 from ajagent.tools.base import ToolError
-from ajagent.tools.database import database_tool
-from ajagent.tools.files import Workspace
+from ajagent.tools.database.sqlite import database_tool
+from ajagent.tools.files.workspace import Workspace
 
 
 def build_registry(settings):

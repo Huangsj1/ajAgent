@@ -4,7 +4,7 @@ import sys
 import pytest
 from ajagent.rag.types import Hit, SearchResult
 from ajagent.rag.service import RetrievalService, RagSettings, build_service
-from ajagent.tools.retrieval import retrieval_tool
+from ajagent.tools.retrieval.search import retrieval_tool
 from ajagent.core.loop import run_agent
 from ajagent.core.types import ModelTurn
 
@@ -97,3 +97,22 @@ def test_agent_cli_registration(tmp_path, monkeypatch, flags, expected):
     settings.tool_timeout = 5
     monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), *flags, 'hello'])
     assert cli.main() == 0
+
+
+def test_failed_web_tool_is_error_but_partial_results_survive():
+    from ajagent.tools.registry import execute
+    from ajagent.core.types import ToolCall
+    class FailedWeb:
+        def search(self, *args, **kwargs):
+            return SearchResult(warnings=['Tavily unavailable'], diagnostics={
+                'web': {'status': 'error', 'attempts': 1}})
+    service = RetrievalService({'web': FailedWeb()})
+    tool = retrieval_tool(service)
+    call = ToolCall('1', 'retrieve', '{"query":"q"}')
+    result = execute(call, {'retrieve': tool})
+    assert not result.ok and result.error['code'] == 'retrieval_unavailable'
+    service.backends['local'] = Backend([Hit('1', 'local', 'a.txt', 'evidence')])
+    tool = retrieval_tool(service)
+    result = execute(call, {'retrieve': tool})
+    assert result.ok and result.data['hits'] and result.data['warnings']
+    assert result.data['diagnostics']['web']['attempts'] == 1

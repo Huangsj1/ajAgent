@@ -3,14 +3,19 @@ import json
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from ajagent.rag.local.syntax import definitions, LANGUAGES
 from ajagent.rag.types import Hit, SearchResult, identifier
-from ajagent.tools.files import Workspace
+from ajagent.tools.files.workspace import Workspace
 
 
 class LocalSearch:
     def __init__(self, root, config_path="config.local.toml", timeout=5, max_files=1000):
-        self.workspace = Workspace(root, config_path, timeout)
+        target = Path(root).expanduser().absolute()
+        self.target_file = target.name if target.is_file() else None
+        self.workspace = Workspace(target.parent if self.target_file else target, config_path, timeout)
+        if self.target_file:
+            self.workspace.resolve(self.target_file)
         self.timeout, self.max_files = timeout, max_files
 
     def search(self, query, limit=20, mode="text", glob=None):
@@ -18,7 +23,9 @@ class LocalSearch:
             raise ValueError("Invalid local search parameters")
         files, result = [], SearchResult()
         # 1. Collect all files in the workspace, skipping oversized files and applying glob filtering.
-        for name, path in self.workspace.files("."):
+        candidates = ([(self.target_file, self.workspace.resolve(self.target_file))]
+                      if self.target_file else self.workspace.files("."))
+        for name, path in candidates:
             if glob and not path.match(glob):
                 continue
             if path.stat().st_size > 1_000_000:

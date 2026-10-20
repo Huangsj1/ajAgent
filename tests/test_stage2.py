@@ -234,7 +234,7 @@ def test_sql_nonfinite_value_remains_serializable(settings):
 
 
 def test_file_scan_timeout(settings, monkeypatch):
-    import ajagent.tools.files as files
+    import ajagent.tools.files.workspace as files
     clock = iter([0, 10])
     monkeypatch.setattr(files.time, "monotonic", lambda: next(clock))
     assert invoke(settings, "list_files", {}).error["code"] == "timeout"

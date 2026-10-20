@@ -10,7 +10,7 @@ flowchart TD
     D -->|是| S[选择 local / semantic / web]
     S --> L[ripgrep 文本 / Tree-sitter 符号]
     S --> V[Qwen query embedding → HNSW]
-    S --> W[DuckDuckGo 搜索摘要]
+    S --> W[Tavily 搜索摘要]
     L & V & W --> F[去重 + Reciprocal Rank Fusion]
     F --> R[可选 Qwen Reranker]
     R --> O[有界证据 + URI / 行号 / warnings]
@@ -32,7 +32,8 @@ rag/
 ├── types.py                 # Hit、SearchResult 的统一契约
 ├── device.py                # auto / CPU / CUDA / MPS 与推理精度
 ├── service.py               # 配置、按需组装、结果融合与 rerank
-├── cli.py                   # 独立 index/search 命令
+├── cli.py                   # 独立 index/update/search 命令
+├── knowledge.py             # 构建/更新和打开知识库的公共接口
 ├── local/
 │   ├── search.py            # rg 字面量/正则搜索、AST 符号搜索
 │   └── syntax.py            # Python / JavaScript / TypeScript / TSX AST
@@ -41,12 +42,12 @@ rag/
 │   ├── encoder.py           # Qwen3-Embedding-0.6B
 │   └── store.py             # 增量写入、快照发布、HNSW 查询
 ├── web/
-│   └── search.py            # 搜索引擎适配、URL 去重、短期缓存
+│   └── search.py            # Tavily SDK 请求、配置、结果归一化与错误返回
 ├── ranking/
 │   └── qwen.py              # Qwen3-Reranker-0.6B
 ```
 
-`tools/retrieval.py` 将 service 适配成现有 `ToolSpec`。当前索引为 `.ajagent/rag-index`，配置统一使用 `[rag]`。
+`tools/retrieval/search.py` 将 service 适配成现有 `ToolSpec`。当前索引为 `knowledge/.index`，配置统一使用 `[rag]`。
 
 ## 安装与运行
 
@@ -71,7 +72,43 @@ uv run ajagent --no-rag '你好'
 uv run ajagent --rag --rag-sources local --no-rag-rerank '查找 run_agent 的定义'
 ```
 
-`index` 只做本地模型推理，不调用聊天 API。默认扫描工作目录下 `examples/knowledge`，可用 `--knowledge docs --index .ajagent/docs-index` 改变；查询时使用相同 `--index` 和 `--knowledge`。模型缓存放在 `.ajagent/models`，默认 `auto` 按 CUDA → MPS → CPU 选择设备，也可显式配置 `cpu`、`mps`、`cuda` 或 `cuda:0`。首次下载需要网络和数 GB 磁盘；缺少依赖/模型时会报错或在部分结果中给出 warning，不会用随机向量替代。
+`index` 构建或增量更新知识库，`update` 可只指定索引目录、从索引中读取源目录后更新。默认原文位于项目 `knowledge/`，生成数据位于 `knowledge/.index/`，模型缓存位于 `.ajagent/models`。构建/检索不调用聊天 API。默认 `auto` 按 CUDA → MPS → CPU 选择设备；首次使用下载 Qwen 模型。
+
+### 项目外目录、文件与独立知识库
+
+```bash
+# Only change Local Search; the ordinary file/database tools keep their workspace.
+uv run ajagent-rag search 'keyword' --sources local --local-path /path/to/other-folder --no-rerank
+uv run ajagent-rag search 'keyword' --sources local --local-path /path/to/single-file.txt --no-rerank
+uv run ajagent --rag --rag-sources local --rag-local-path /path/to/other-folder --no-rag-rerank '查找相关代码'
+
+# Build/update from an arbitrary source folder into a separately chosen output folder.
+uv run --extra local-models ajagent-rag index --source /path/to/notes --output /path/to/my-index
+uv run --extra local-models ajagent-rag update --index /path/to/my-index
+
+# Search or start the agent by giving only the index location.
+uv run --extra local-models ajagent-rag search '问题' --sources semantic --index /path/to/my-index
+uv run --extra local-models ajagent --rag --rag-sources semantic --rag-index /path/to/my-index '问题'
+```
+
+`--source` 与 `--knowledge` 同义，`--output` 与 `--index` 同义。index 在目录不存在时创建索引，已有索引则增量更新；update 不传 source 时要求索引已存在，使用其记录的源目录。查询只需索引位置，不要求源目录处于 agent workspace 中。
+
+源目录和输出目录均支持绝对路径及 `~`；输出可以放在源目录内部（例如 `knowledge/.index`），生成数据会被跳过，不会重复索引自己。输出不能等于源目录或包含整个源目录。索引记录源目录的绝对位置，当前仍会读取原文件 hash 检查是否过期，因此原文必须可访问；移动原文后需选择新的输出目录重建。仅移动索引目录不会改变原文位置，可以直接打开。
+
+`--workspace /path/to/other-project` 本来就能调整基础文件/数据库工具和默认 Local Search 范围；`--rag-local-path` 只改变 RAG Local Search，支持目录或单个文件，选择文件不会扫描其兄弟文件。模型不能通过 retrieve 参数任意扩大启动时指定的范围。统一 service 返回绝对文件路径，避免不同目录中的同名文件被错误合并；`metadata.relative_path` 保留相对于该来源根目录的路径。
+
+### Python 公共接口
+
+```python
+from ajagent.rag.knowledge import update_knowledge, open_knowledge
+
+stats = update_knowledge('/path/to/notes', '/path/to/my-index', device='auto')
+index = open_knowledge('/path/to/my-index', device='auto')
+hits = index.search('问题', limit=5).hits
+stats = index.update()  # Reuse the source directory recorded in the index.
+```
+
+直接调用 SemanticIndex 返回的 uri 相对于 `index.root`；经统一 RetrievalService/agent 工具后转换为绝对路径。Python 接口的相对路径以进程当前目录为基准；可显式传 cache 指定模型缓存，或传 encoder 做测试与替换实现。
 
 启用本地模型的命令始终带 `--extra local-models`，避免 uv 的依赖同步移除可选包。只使用 Local/Web 且关闭 rerank 时不加载 torch 或模型权重。默认开启 rerank，因此即使只搜索 Local，也应带模型 extra 或明确关闭 rerank。
 
@@ -83,15 +120,21 @@ uv run ajagent --rag --rag-sources local --no-rag-rerank '查找 run_agent 的�
 [rag]
 enabled = false
 sources = ["local", "semantic"]
-knowledge = "examples/knowledge"
-index = ".ajagent/rag-index"
+knowledge = "knowledge"
+local_path = "" # Empty uses the agent workspace; otherwise a folder or single file.
+index = "knowledge/.index"
 cache = ".ajagent/models"
 rerank = true
 device = "auto"
 candidates = 10
+
+[tavily]
+api_key = ""             # Fill in config.local.toml only.
+timeout = 30
+search_depth = "basic"   # basic / advanced / fast / ultra-fast
 ```
 
-路径以 workspace 为基准；`--config` 以当前命令目录为基准。`knowledge` 必须在 workspace 内。agent 参数是 `--rag` / `--no-rag`、`--rag-sources`、`--rag-rerank` / `--no-rag-rerank`。独立检索 CLI 的对应参数是 `--sources`、`--rerank` / `--no-rerank`。
+TOML 中的 knowledge/index/cache/local_path 相对路径以配置文件所在目录为基准；CLI 显式传入的路径以当前工作目录为基准。空 local_path 使用 agent workspace。CLI 参数优先于 TOML。agent 通过 `--rag-index` 指定索引，`--rag-local-path` 指定 Local Search 范围；二者都不隐式开启 RAG，仍需 `--rag`。知识库源目录与输出目录不受 agent workspace 限制。
 
 ### GPU 加速
 
@@ -132,7 +175,7 @@ PDF 使用 pypdf 一次提取文本，随后像普通文本一样分块；不做
 ### 存储与增量算法
 
 ```text
-.ajagent/rag-index/
+knowledge/.index/
 ├── CURRENT                       # 原子替换的当前 generation 名称
 ├── LOCK                          # Unix flock，串行化 writer
 ├── texts/<content-sha256>.txt     # 独立正文；相同内容共用
@@ -156,9 +199,19 @@ query embedding → HNSW ANN → SQLite 取 metadata → 正文缓存取 text。
 
 ## 3. Web Search
 
-通过 `ddgs` 固定使用 `duckduckgo` backend 搜索；不再提供引擎选择参数。统一标题、URL、摘要；去除 URL fragment、常见跟踪参数，按 URL 去重。最多缓存 128 个查询、TTL 300 秒；默认网络 timeout 10 秒。此 timeout 依赖底层客户端，不是严格整个任务 wall-clock 限额。
+使用官方 `tavily-python` 的 `TavilyClient(api_key=...).search(...)`，客户端首次搜索时创建并复用连接。调用流程为一次请求 → 解析来源 → 返回结果，不做自动重试、延迟、冷却或缓存；连续调用即分别请求一次。
 
-返回 `metadata.evidence_type=search_snippet`；当前不抓取全文、不执行网页脚本。联网失败会返回 warning，不会偷偷换引擎。DuckDuckGo 已完成实际查询验证。搜索摘要和排名会随时间改变。
+配置放在 `[tavily]`：api_key（不进入 dataclass repr）、timeout（默认 30 秒）、search_depth（默认 basic，支持 advanced/fast/ultra-fast）。`TAVILY_API_KEY` 环境变量优先于 TOML。没有 key 时，Local/Semantic 仍可使用，只有调用 Web 才返回 missing_api_key。
+
+请求固定 topic=general、auto_parameters=false、include_answer=false、include_raw_content=false、include_images=false，获取来源内容用于本项目自己的 RAG/回答模型。每次最多 20 条候选，超过 20 的内部候选预算会截断为 20。搜索深度由配置显式选择，不自动升级；实际费用以 Tavily 账户规则为准。
+
+将响应 title/url/content/score 映射为 Hit，保留 Tavily 相关性分数，再交给现有 RRF/reranker。规范化 URL、去掉常见跟踪参数并去重；每条内容默认最多 2000 字符，通过 `[tavily].max_content_chars` 调整（1–20000），裁剪在 metadata 中标记。`evidence_type=search_excerpt` 表示搜索返回的内容摘录，不冒充网页全文。
+
+SDK API 错误立即返回异常类型和服务端消息（脱敏、限长）；SDK 保留 HTTP 响应的其他错误同时返回状态码；超时/网络失败直接返回相应错误，不重试。正常空结果标记 empty；响应格式异常标记 invalid_response；SDK 会将缺少 results 的对象补为空列表。`diagnostics.web` 包含 provider、status、attempts，以及成功响应的 request_id 或可用的失败响应 http_status（SDK 的类型化错误不保留原始状态码）。一次实际请求 attempts=1，未配置 key 为 0。
+
+全无结果且后端失败时工具返回 retrieval_unavailable；其他来源仍有结果时保留证据和 warning，agent 日志显示 partial。Tavily 也可能返回 429 或额度错误，这些同样直接返回，不保证服务永远不受限制。
+
+实现依据：[官方 Agent Setup Skill](https://tavily.com/agent-setup/SKILL.md) 的应用集成路径、[Python SDK 参考](https://docs.tavily.com/sdk/python/reference)。当前只实现 search；没有额外接入 extract/crawl/map/research。
 
 目前不做额外 Web embedding 排序：三个来源在粗召回后统一 cross-encoder rerank，避免重复计算；可在 WebSearch 后添加 embedding 预筛选而不改变工具接口。
 
@@ -192,10 +245,11 @@ uv run pytest tests/rag/test_local.py -q
 uv run pytest tests/rag/test_semantic.py -q
 uv run pytest tests/rag/test_web.py -q
 uv run pytest tests/rag/test_service.py -q
+uv run pytest tests/rag/test_knowledge.py -q
 uv run pytest -q
 ```
 
-测试无需网络/API key：Local 使用真实 rg/Tree-sitter；Semantic 使用可控 embedding 和真实 HNSW/SQLite/NumPy，验证增删改、内容复用、过期过滤、原子发布失败、空索引、真实 PDF 提取后查询不再解析、ANN 对照精确排名；Web 注入客户端验证错误、去重和缓存；service 验证多源融合、rerank、部分失败、输出预算和“提供工具但不调用”。
+测试无需网络/API key：Local 使用真实 rg/Tree-sitter；Semantic 使用可控 embedding 和真实 HNSW/SQLite/NumPy，验证增删改、内容复用、过期过滤、原子发布失败、空索引、真实 PDF 提取后查询不再解析、ANN 对照精确排名；Web 使用 MockTransport 验证请求、错误、去重与不重试；service 验证多源融合、rerank、部分失败、输出预算和“提供工具但不调用”。
 
 真实模型与网络冒烟验证独立记录于 [本次重构验证](../../../docs/experiments/rag-validation.md)。
 
@@ -205,6 +259,6 @@ uv run pytest -q
 - [Qwen Reranker 模型卡](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B)：yes/no 打分和输入格式。
 - [hnswlib](https://github.com/nmslib/hnswlib)：ANN 参数、增量插入与删除标记。
 - [py-tree-sitter](https://github.com/tree-sitter/py-tree-sitter)：结构化语法解析。
-- [DDGS](https://github.com/deedy5/ddgs)：搜索引擎适配。
+- [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)：请求参数、结果和错误格式。
 
 参考现代 harness 的“模型决定下一步、宿主提供工具与上下文”原则；这里是独立教学实现，不声称复刻了 Claude Code 未公开的核心代码。

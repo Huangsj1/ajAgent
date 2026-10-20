@@ -16,3 +16,6 @@ __pycache__/
 build/
 dist/
 .DS_Store
+
+# Generated knowledge index (source documents remain tracked).
+knowledge/.index/

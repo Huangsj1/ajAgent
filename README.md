@@ -24,7 +24,7 @@ uv run python --version
 uv run python -c "import httpx, pytest, tomllib; print('Environment ready')"
 ```
 
-无需手动激活虚拟环境，后续命令使用 `uv run` 即可。依赖版本由 `uv.lock` 锁定；uv 缓存放在被忽略的 `.uv-cache/`。基础依赖还包括 Tree-sitter、HNSW、pypdf 和 DDGS；本地 Qwen 模型通过 `local-models` extra 安装 torch/transformers，测试使用 pytest，没有 Agent SDK。项目通过 hatchling 安装为本地包，提供 `uv run ajagent` 和 `uv run ajagent-rag` 入口。
+无需手动激活虚拟环境，后续命令使用 `uv run` 即可。依赖版本由 `uv.lock` 锁定；uv 缓存放在被忽略的 `.uv-cache/`。基础依赖还包括 Tree-sitter、HNSW 和 pypdf；Web Search 使用官方 tavily-python SDK；本地 Qwen 模型通过 `local-models` extra 安装 torch/transformers，测试使用 pytest，没有 Agent SDK。项目通过 hatchling 安装为本地包，提供 `uv run ajagent` 和 `uv run ajagent-rag` 入口。
 
 ## 本地配置
 
@@ -160,8 +160,26 @@ uv run ajagent-rag search 'Qwen3 Embedding' --sources web --no-rerank
 uv run ajagent --no-rag '你好'
 ```
 
-默认知识目录 `examples/knowledge`，索引 `.ajagent/rag-index`，模型缓存 `.ajagent/models`。新版不调用 OpenAI embedding API；首次使用下载本地 Qwen 权重。DeepSeek/GPT 仍负责回答，需要相应 key。未修改已有 `config.local.toml`。
+默认知识目录 `knowledge`，索引 `knowledge/.index`，模型缓存 `.ajagent/models`。新版不调用 OpenAI embedding API；首次使用下载本地 Qwen 权重。DeepSeek/GPT 仍负责回答，需要相应 key。当前 example/local TOML 已同步为上述默认路径，厂商凭据保持原值。
 
-Local 使用 rg/Tree-sitter；Semantic 使用章节/AST 分块、独立文本缓存、NumPy/SQLite/HNSW 增量索引；Web 使用 DuckDuckGo 搜索摘要。结果经过 RRF 融合和可选 Qwen rerank，提供路径/行号/URL 和明确的失败提示。DuckDuckGo 已通过实际查询验证。
+Local 使用 rg/Tree-sitter；Semantic 使用章节/AST 分块、独立文本缓存、NumPy/SQLite/HNSW 增量索引；Web 使用 Tavily 搜索摘要。结果经过 RRF 融合和可选 Qwen rerank，提供路径/行号/URL 和明确的失败提示。Tavily 已通过实际查询验证。
 
 详细配置、存储结构、限制与分层测试见 [rag/README](src/ajagent/rag/README.md)，真实验证见 [报告](docs/experiments/rag-validation.md)。
+
+## 自选搜索范围与知识库
+
+```bash
+# Search an external directory or a single file.
+uv run ajagent --rag --rag-sources local --rag-local-path /path/to/folder --no-rag-rerank '查找相关内容'
+# Create/update a separate knowledge index.
+uv run --extra local-models ajagent-rag index --source /path/to/notes --output /path/to/index
+uv run --extra local-models ajagent-rag update --index /path/to/index
+# Start the agent with that index; its source need not be in the agent workspace.
+uv run --extra local-models ajagent --rag --rag-sources semantic --rag-index /path/to/index '回答问题并引用依据'
+```
+
+默认使用根目录 `knowledge/` 放原文，`knowledge/.index/` 放 SQLite、NumPy、HNSW 和正文缓存；生成数据不入 Git，也不会被再次索引。只给索引位置即可读取其记录的源目录；原文仍需可访问以检查更新状态。TOML 相对路径以配置文件所在目录为基准，CLI 路径以命令当前目录为基准。
+
+工具按职责组织：`tools/files/workspace.py` 管理文件工具，`tools/database/sqlite.py` 管理数据库工具，`tools/retrieval/search.py` 适配检索工具；共享定义和调度保留在 `tools/base.py`、`tools/registry.py`。知识库 Python 接口为 `rag.knowledge.update_knowledge()` 与 `open_knowledge()`，详见 [RAG README](src/ajagent/rag/README.md)。
+
+Web Search 使用 Tavily。将 key 放入 config.local.toml 的 `[tavily]` 小节，可配置 `timeout=30`、`search_depth="basic"`、`max_content_chars=2000`；也可用 TAVILY_API_KEY 环境变量覆盖。搜索每次只发一次请求，不自动重试、延迟、冷却或缓存；错误直接返回，详见 [Web Search](src/ajagent/rag/README.md#3-web-search)。两份 TOML 已同步为新结构，已有 key 保留。

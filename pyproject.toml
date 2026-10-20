@@ -14,7 +14,7 @@ dependencies = [
     "tree-sitter-typescript>=0.23,<0.24",
     "hnswlib>=0.8,<0.9",
     "pypdf>=6,<7",
-    "ddgs>=9,<10",
+    "tavily-python>=0.8.5,<0.9",
 ]
 
 [build-system]

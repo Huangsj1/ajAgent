@@ -11,7 +11,7 @@ import numpy as np
 import hnswlib
 from ajagent.rag.types import Hit, SearchResult, identifier
 from ajagent.rag.semantic.chunks import SUPPORTED, parse, chunks
-from ajagent.tools.files import Workspace
+from ajagent.tools.files.workspace import Workspace
 from ajagent.tools.base import ToolError
 
 
@@ -25,6 +25,20 @@ class SemanticIndex:
         self.encoder = encoder
         self.source_directory = source_directory
         self.workspace = Workspace(self.root, config_path, timeout=60)
+
+    @classmethod
+    def open(cls, directory, encoder, config_path='config.local.toml'):
+        """Open an existing index using its recorded source directory."""
+        directory = Path(directory).expanduser().resolve()
+        generation = directory / (directory / 'CURRENT').read_text().strip()
+        with sqlite3.connect((generation / 'metadata.sqlite').as_uri() + '?mode=ro', uri=True) as db:
+            row = db.execute('select value from settings').fetchone()
+            if row is None:
+                raise ValueError('Index metadata is missing')
+            root, fingerprint, source_directory, version = json.loads(row[0])
+            index = cls(root, directory, encoder, config_path, source_directory)
+            index.check(db)
+        return index
 
     def current(self):
         """Return the current generation directory"""

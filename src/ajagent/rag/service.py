@@ -3,7 +3,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
-from ajagent.rag.types import SearchResult
+import os
+from ajagent.rag.web.search import TavilySettings
+from ajagent.rag.types import SearchResult, identifier
 from ajagent.rag.device import validate_device
 
 
@@ -11,18 +13,28 @@ from ajagent.rag.device import validate_device
 class RagSettings:
     enabled: bool = False
     sources: list[str] = field(default_factory=lambda: ['local', 'semantic'])
-    knowledge: str = 'examples/knowledge'
-    index: str = '.ajagent/rag-index'
+    knowledge: str = 'knowledge'
+    local_path: str = ''
+    index: str = 'knowledge/.index'
     cache: str = '.ajagent/models'
     rerank: bool = True
     device: str = 'auto'
     candidates: int = 10
+    tavily: TavilySettings = field(default_factory=TavilySettings, repr=False)
+
+    def paths(self, base):
+        """TOML paths are relative to its directory; CLI overrides are absolute."""
+        return {name: (Path(base) / Path(getattr(self, name)).expanduser()).resolve()
+                for name in ['knowledge', 'index', 'cache', 'local_path']}
 
     @classmethod
     def load(cls, path, enabled=None, sources=None, rerank=None):
         path = Path(path)
-        data = tomllib.loads(path.read_text()).get('rag', {}) if path.exists() else {}
-        settings = cls(**data)
+        config = tomllib.loads(path.read_text()) if path.exists() else {}
+        tavily = dict(config.get('tavily', {}))
+        if 'TAVILY_API_KEY' in os.environ:
+            tavily['api_key'] = os.environ['TAVILY_API_KEY']
+        settings = cls(**config.get('rag', {}), tavily=TavilySettings(**tavily))
         for name, value in [('enabled', enabled), ('sources', sources), ('rerank', rerank)]:
             if value is not None:
                 setattr(settings, name, value)
@@ -33,6 +45,7 @@ class RagSettings:
         if type(settings.candidates) is not int or not 1 <= settings.candidates <= 30:
             raise ValueError('candidates must be 1..30')
         validate_device(settings.device)
+        settings.tavily.validate()
         return settings
 
 
@@ -54,12 +67,20 @@ class RetrievalService:
                 # Search each backend
                 found = self.backends[source].search(query, max(limit, self.candidates), **kwargs)
             except Exception as error:
+                result.diagnostics[source] = {'status': 'error', 'error': type(error).__name__}
                 result.warnings.append(f'{source} unavailable ({type(error).__name__}); check backend configuration')
                 continue
+            result.diagnostics.update(found.diagnostics)
             result.warnings.extend(found.warnings)
             result.truncated |= found.truncated
             # for each search result, merge same records and calculate the score and rank for reciprocal rank fusion (RRF)
             for rank, item in enumerate(found.hits, 1):     # rank start from 1
+                item = deepcopy(item)
+                backend = self.backends[source]
+                if source in {'local', 'semantic'} and hasattr(backend, 'workspace'):
+                    item.metadata['relative_path'] = item.uri
+                    item.uri = str(backend.workspace.root / item.uri)
+                    item.id = identifier(item.uri, item.id)
                 key = (item.uri, item.start_line, item.end_line)
                 if key not in merged:
                     hit = deepcopy(item)
@@ -96,14 +117,19 @@ def build_service(root, settings, config_path='config.local.toml'):
     from ajagent.rag.semantic.store import SemanticIndex
     from ajagent.rag.web.search import WebSearch
     from ajagent.rag.ranking.qwen import QwenReranker
-    root = Path(root).resolve()
+    root = Path(root).expanduser().resolve()
+    base = Path(config_path).expanduser().resolve().parent
+    paths = settings.paths(base)
     backends = {}
     if 'local' in settings.sources:
-        backends['local'] = LocalSearch(root, config_path)
+        backends['local'] = LocalSearch(paths['local_path'] if settings.local_path else root, config_path)
     if 'semantic' in settings.sources:
-        backends['semantic'] = SemanticIndex(root, root / settings.index,
-            QwenEncoder(root / settings.cache, settings.device), config_path, settings.knowledge)
+        encoder = QwenEncoder(paths['cache'], settings.device)
+        if (paths['index'] / 'CURRENT').exists():
+            backends['semantic'] = SemanticIndex.open(paths['index'], encoder, config_path)
+        else:
+            backends['semantic'] = SemanticIndex(paths['knowledge'], paths['index'], encoder, config_path)
     if 'web' in settings.sources:
-        backends['web'] = WebSearch()
-    reranker = QwenReranker(root / settings.cache, settings.device) if settings.rerank else None
+        backends['web'] = WebSearch(settings.tavily)
+    reranker = QwenReranker(paths['cache'], settings.device) if settings.rerank else None
     return RetrievalService(backends, reranker, settings.candidates)

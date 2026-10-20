@@ -184,10 +184,11 @@ tests/
 - [x] S3.4 本地 Qwen3-Embedding-0.6B，固定模型版本、query instruction、归一化。
 - [x] S3.5 vectors.npy + metadata.sqlite + HNSW ANN；文件增删改、内容向量复用、过期结果过滤。
 - [x] S3.6 generation 快照原子发布；失败保留旧索引；writer 文件锁。
-- [x] S3.7 Web：DDG 适配、URL 去重、缓存、摘要来源标记、失败提示。
+- [x] S3.7 Web：Tavily SDK 适配、URL 去重、摘录来源标记、单次请求与直接错误返回。
 - [x] S3.8 统一 Hit/SearchResult，RRF 融合，Qwen3-Reranker-0.6B 精排。
 - [x] S3.9 统一 retrieve 工具；完整证据预算裁剪、部分后端失败时保留其余结果。
-- [x] S3.10 分层离线测试；真实 Qwen embedding/rerank、DDG、DeepSeek 检索与 GPT 无工具回答验证。
+- [x] S3.10 分层离线测试；真实 Qwen embedding/rerank、Tavily、DeepSeek 检索与 GPT 无工具回答验证。
+- [x] S3.13 tools 按文件/数据库/检索分组；支持独立 Local Search 路径、外部知识库源/输出目录、仅凭索引位置启动 agent。
 - [x] S3.11 rag/README 详细说明；仅保留当前实现、测试与验证记录。
 - [ ] 后续：新版大语料 recall/延迟评测、引用语义支持评测、compaction/GC、更多文档类型；不作为本次核心功能完成条件。
 
@@ -199,9 +200,9 @@ src/ajagent/rag/
 ├── semantic/    # chunking, Qwen, snapshots and HNSW
 ├── web/         # search snippets and cache
 ├── ranking/     # Qwen reranker
-src/ajagent/tools/retrieval.py
+src/ajagent/tools/retrieval/search.py
 tests/rag/
-.ajagent/rag-index/            # Generated data; ignored.
+knowledge/.index/            # Generated data; ignored.
 ```
 
 验收与限制见 [新版验证](experiments/rag-validation.md) 和 [RAG 说明](../src/ajagent/rag/README.md)。新版不强制最终引用校验；来源存在不等于支持结论。
@@ -284,7 +285,7 @@ evals/cases/harness.jsonl
 
 **目标：** 扩展能力但保持同一工具入口，理解按需上下文和隔离子任务。
 
-- [ ] S6.1 Web：实现 `fetch_url`（超时、正文提取、来源 URL），与真正的 `web_search` 分开。搜索首版可用 Wikipedia MediaWiki 搜索 API，不引入第三家模型；说明它不是全网覆盖，并用缓存 fixture 做测试。
+- [ ] S6.1 Web：实现 `fetch_url`（超时、正文提取、来源 URL），与真正的 `web_search` 分开。搜索已在 Stage 3 使用 Tavily；本阶段补充全文抓取，使用离线 fixture 验证。
 - [ ] S6.2 Browser：用 Playwright 操作本地演示网页，暴露 navigate/read/click，至少完成一次点击后读取动态内容；浏览器可选安装，未安装时工具不注册。
 - [ ] S6.3 Code：扩展受控 Python 脚本执行，返回 stdout/stderr/exit_code；不在主进程里 eval。结合 Stage 5 权限和超时，后续需要强隔离时再加容器。
 - [ ] S6.4 工具结果统一来源结构，使文件、数据库、网页、浏览器输出都能进入 evidence map；抓取失败不拿搜索摘要当原文。

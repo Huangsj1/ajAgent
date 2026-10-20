@@ -10,7 +10,7 @@ flowchart TD
     D -->|是| S[选择 local / semantic / web]
     S --> L[ripgrep 文本 / Tree-sitter 符号]
     S --> V[Qwen query embedding → HNSW]
-    S --> W[DuckDuckGo 搜索摘要]
+    S --> W[Tavily 搜索摘要]
     L & V & W --> F[去重 + Reciprocal Rank Fusion]
     F --> R[可选 Qwen Reranker]
     R --> O[有界证据 + URI / 行号 / warnings]
@@ -150,7 +150,6 @@ flowchart TD
 
 ```text
 .ajagent/
-├── rag-index/                # Generations: SQLite, vectors, HNSW; cached texts.
 ├── models/                   # Local Qwen weights.
 ├── sessions/                 # Original conversation history.
 ├── memory/                   # Explicit cross-session notes.
@@ -200,8 +199,8 @@ Stage 1 示例不提供文件权限策略、日志持久化、会话恢复或自
 - `core/types.py`：ToolCall、ModelTurn、ToolResult、RunResult；usage 统一为 input_tokens/output_tokens。
 - `core/loop.py`：唯一包内循环，批次顺序执行、错误回填、用量累计、步数和重复批次终止。独立 Stage 1 示例仅作教学保留。
 - `tools/base.py`、`registry.py`：普通字典注册、JSON Schema 校验、结构化结果和字符上限；意外工具异常隔离为 tool_error。
-- `tools/files.py`：workspace 路径边界、配置/隐藏路径与链接排除、UTF-8 行读取、字面量扫描；来源是文件路径和行号。
-- `tools/database.py`：只读 URI + authorizer，禁止写入/ATTACH/PRAGMA；progress handler 控制查询时间，fetchmany 控制结果行数。
+- `tools/files/workspace.py`：workspace 路径边界、配置/隐藏路径与链接排除、UTF-8 行读取、字面量扫描；来源是文件路径和行号。
+- `tools/database/sqlite.py`：只读 URI + authorizer，禁止写入/ATTACH/PRAGMA；progress handler 控制查询时间，fetchmany 控制结果行数。
 - `cli.py`：组合配置、模型与 registry，输出简短工具状态、最终答案与 token 数；不持久保存历史。
 
 单次结果默认限制 6000 字符；截断会提供重新缩小查询的提示，丢弃不完整的 sources。连续三轮相同批次/相同结果判为无进展，不等价于通用语义进度检测。文件/SQL 超时是合作式机制，本阶段没有任意工具强制中断或安全沙箱。
@@ -217,12 +216,21 @@ Stage 1 示例不提供文件权限策略、日志持久化、会话恢复或自
 | `rag/semantic/chunks.py` | 文档章节、代码定义边界；PDF 文本提取 |
 | `rag/semantic/encoder.py` | 懒加载 Qwen；query instruction、last-token pooling |
 | `rag/semantic/store.py` | SQLite 元数据、独立 txt、NumPy 向量、增量 HNSW、generation 发布 |
-| `rag/web/` | 搜索引擎适配、摘要证据、URL 去重与 TTL 缓存 |
+| `rag/web/` | Tavily SDK、摘录证据、URL 去重与单次请求错误返回 |
 | `rag/ranking/` | Qwen yes/no cross-encoder，最后 token logits |
 | `rag/service.py` | 配置、统一检索、多源去重/RRF、部分错误和精排 |
-| `tools/retrieval.py` | 可选 ToolSpec 与输出预算 |
-| `rag/cli.py` | 无聊天 key 的 index/search 命令 |
+| `tools/retrieval/search.py` | 可选 ToolSpec 与输出预算 |
+| `rag/cli.py` | 无聊天 key 的 index/update/search 命令 |
+| `rag/knowledge.py` | 独立源目录与输出目录的构建/更新接口；仅凭索引位置打开 |
 
 agent CLI 的 `--rag` 控制是否额外注册工具，开启不意味着必须调用。模型权重只在实际检索/精排时加载。Web 默认不启用。backend 失败转 warnings，模型需区分“检索失败”和“确实没有证据”。
 
 详细实现、数据格式、性能边界和验证见 [RAG README](../src/ajagent/rag/README.md) 与 [新版报告](experiments/rag-validation.md)。没有全自动事实核验、索引 GC 或持久会话；后续 harness 能在现有工具接口上加入这些能力。
+
+## 文件范围与知识库位置
+
+`tools/` 下按 files/database/retrieval 分组，共享协议与 registry 留在根目录。文件与数据库工具仍以 agent workspace 为边界；RAG Local Search 可以通过 `--rag-local-path` 独立选择项目外目录或单个文件。
+
+SemanticIndex 的 root 是知识库源目录，不再绑定 agent workspace。index/update 将来源绝对路径与 embedding/chunk 配置保存在 SQLite settings 中；open_knowledge 读取这些 metadata，因此 agent 只需 `--rag-index` 即可使用外部索引。源文件仍需可访问用于 hash 新鲜度检查。service 在跨来源融合前把本地 URI 转为绝对路径，避免同名文件冲突。
+
+默认布局为 `knowledge/*` 原文与 `knowledge/.index/{CURRENT,texts,gen-*}` 生成文件；生成目录从扫描中排除。模型缓存继续放在 `.ajagent/models`。TOML 路径相对配置文件目录，CLI 路径相对当前目录，二者均可使用绝对路径。
