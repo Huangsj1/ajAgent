@@ -2,6 +2,9 @@
 # RAG is optional; Qwen retrieval models run locally.
 
 [runtime]
+context_tokens = 32000
+output_tokens = 4096
+memory = true
 provider = "deepseek"
 workspace = "."
 max_steps = 8

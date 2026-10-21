@@ -2,7 +2,10 @@
 
 ```mermaid
 flowchart TD
-    A[Agent / CLI] --> E{启用 RAG?}
+    A[Agent / CLI] --> H[加载项目指令与可选显式记忆]
+    H --> J[新建或恢复 JSONL 会话]
+    J --> Ctx[构建上下文 / 裁剪 / 必要时摘要]
+    Ctx --> E{启用 RAG?}
     E -->|否| B[基础文件与数据库工具 / 直接回答]
     E -->|是| T[额外注册 retrieve 工具]
     T --> D{Agent 决定是否检索}
@@ -44,7 +47,7 @@ flowchart TD
     D -->|Empty / refusal / incomplete| E
 ```
 
-> 当前已实现 Stage 0–3。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
+> 当前已实现 Stage 0–4。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
 
 ## 目标流程
 
@@ -170,7 +173,7 @@ Stage 7 coordinator 顺序调用独立上下文的 researcher/writer/reviewer/re
 
 ## 8. 当前范围与后续维护
 
-Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 起的记忆、harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
+Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 已实现 context/memory 和会话恢复；Stage 5 起的 harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
 
 暂不做 Web UI、分布式执行、企业级权限、自动部署、复杂插件市场和多层 agent 递归。优先保持可读、可调试、可验证；新的模块应解决已遇到的问题。
 
@@ -234,3 +237,22 @@ agent CLI 的 `--rag` 控制是否额外注册工具，开启不意味着必须�
 SemanticIndex 的 root 是知识库源目录，不再绑定 agent workspace。index/update 将来源绝对路径与 embedding/chunk 配置保存在 SQLite settings 中；open_knowledge 读取这些 metadata，因此 agent 只需 `--rag-index` 即可使用外部索引。源文件仍需可访问用于 hash 新鲜度检查。service 在跨来源融合前把本地 URI 转为绝对路径，避免同名文件冲突。
 
 默认布局为 `knowledge/*` 原文与 `knowledge/.index/{CURRENT,texts,gen-*}` 生成文件；生成目录从扫描中排除。模型缓存继续放在 `.ajagent/models`。TOML 路径相对配置文件目录，CLI 路径相对当前目录，二者均可使用绝对路径。
+
+
+## Stage 4 当前实现
+
+| 模块 | 实现与职责 |
+| --- | --- |
+| `context/builder.py` | 构建输入副本、估算 token、扣除输出预算；超限先裁剪工具输出，再摘要较旧批次；保留最新用户消息与最近两个完整批次 |
+| `context/compaction.py` | 调用当前模型生成带目标、约束、完成项、未解问题、证据位置的摘要；一次失败即结束 |
+| `memory/session.py` | JSONL 追加事件；以完整模型输出及其全部工具结果为 replay 单位；恢复检查 provider/model，并读取摘要检查点 |
+| `memory/long_term.py` | workspace scope 显式记忆的增改查删，JSON 权威记录和 Markdown 可读投影；20 条、每条 1000 字符 |
+| `memory/cli.py` | `ajagent-memory remember/list/forget`，`remember --id` 更新，无需模型凭据 |
+| `cli.py` | 加载根目录 AJAGENT.md、可选记忆、会话和 builder；输出 Session ID、estimated 预算与结束状态 |
+
+原始历史、输入副本、长期偏好各自独立。系统指令与记忆在每次启动时重建，恢复时不会回放旧 system 事件。原始工具结果在输出裁剪前记录；OpenAI reasoning 等协议项目随完整批次保留，压缩不能拆开 call/output。摘要作为历史数据消息注入，不成为新的项目指令。原始历史保留，不会因为摘要而删除；摘要内容由模型生成，并非可证明无损。
+
+当前实现是单进程、单会话写入，摘要遇到超大历史时明确停止而不递归摘要。forget 删除显式记忆，不会清除旧对话文本。配置和操作示例见 README，测试见 `tests/test_context.py`、`tests/test_memory.py`。
+
+
+会话写入采用内存 JSONL 缓冲：完整 replay 批次、约 64 KiB 阈值、运行退出时刷新。`append` 不再每次打开文件；`record` 是批次检查点。`run_agent` 统一在 finally 刷新，即使模型失败或用户取消也执行。Session 从最近 end 恢复 usage 累计快照，run_agent 将本次主模型与摘要增量加到该基线上，更新内存 usage 并统一写入一个 end。CLI 只显示结果，不重复累计或写 end。last_usage 单独保留本次运行最后主模型响应的报告值。

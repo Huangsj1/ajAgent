@@ -23,6 +23,10 @@ def main():
     parser.add_argument("--rag-rerank", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--rag-index", help="Existing knowledge index directory")
     parser.add_argument("--rag-local-path", help="Local search directory or single file (may be outside workspace)")
+    parser.add_argument('--resume', help='Resume a session ID with the same provider/model')
+    parser.add_argument('--memory', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--context-tokens', type=int)
+    parser.add_argument('--output-tokens', type=int)
     args = parser.parse_args()
     try:
         settings = load_config(args)
@@ -42,6 +46,20 @@ def main():
                                   settings.max_output_chars)
             registry[tool.name] = tool
             system_prompt += "\nRetrieval is optional. Use it only when helpful. Cite returned URI and lines when using evidence."
+        from ajagent.context.builder import ContextBuilder
+        from ajagent.memory.session import Session
+        from ajagent.memory.long_term import Memory
+        instructions = settings.workspace / 'AJAGENT.md'
+        if instructions.is_file():
+            system_prompt += '\nProject instructions:\n' + instructions.read_text(encoding='utf-8')
+        if settings.memory:
+            system_prompt += Memory(settings.workspace / '.ajagent').context()
+        session = Session(settings.workspace / '.ajagent', settings.provider, settings.model, args.resume)
+        session.append({'event': 'system', 'content': system_prompt})
+        builder = ContextBuilder(settings.context_tokens, settings.output_tokens)
+        builder.summary = session.checkpoint.get('summary', '')
+        builder.covered = session.checkpoint.get('summarized_groups', 0)
+        print(f'Session: {session.id}')
         adapter = DeepSeekModel if settings.provider == "deepseek" else OpenAIModel
         print(f"Provider: {settings.provider} | Model: {settings.model}")
 
@@ -60,8 +78,10 @@ def main():
         with httpx.Client() as client:
             print("[Running Agent]...")
             result = run_agent(args.prompt, adapter(settings, client), registry,
-                               settings.max_steps, settings.max_output_chars, trace, system_prompt=system_prompt)
-        print(f"[Finished] Status: {result.status}\n{result.answer}\nUsage: {result.usage}")
+                               settings.max_steps, settings.max_output_chars, trace, system_prompt=system_prompt,
+                               session=session, context_builder=builder)
+        print(f'Context (estimated): {builder.stats}')
+        print(f"[Finished] Status: {result.status}\n{result.answer}\nTotal usage (session): {result.usage}\nLast model request usage: {result.last_usage}")
         return 0 if result.status == "completed" else 1
     except (ValueError, TypeError, OSError, AttributeError):
         print("Status: config_error\nCheck provider, model, credentials, workspace and numeric settings.")

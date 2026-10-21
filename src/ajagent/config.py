@@ -19,6 +19,9 @@ class Settings:
     max_output_chars: int = 6000
     tool_timeout: float = 5
     thinking: str = "disabled"
+    context_tokens: int = 32000
+    output_tokens: int = 4096
+    memory: bool = True
 
 
 def load_config(args):
@@ -50,6 +53,15 @@ def load_config(args):
                         Path(value("workspace", ".")).resolve(), path,
                         int(value("max_steps", 8)), float(value("timeout", 30)),
                         int(value("max_output_chars", 6000)), float(value("tool_timeout", 5)), thinking)
+    settings.context_tokens = int(value('context_tokens', 32000))
+    settings.output_tokens = int(value('output_tokens', 4096))
+    settings.memory = getattr(args, 'memory', None)
+    if settings.memory is None:
+        settings.memory = runtime.get('memory', True)
+    if not isinstance(settings.memory, bool):
+        raise ValueError('memory must be boolean')
+    if not 1 <= settings.output_tokens < settings.context_tokens:
+        raise ValueError('Context budget must exceed output reserve')
     if not isinstance(key, str) or not key.strip() or not isinstance(model, str) or not model.strip():
         raise ValueError("Configure the selected provider's key and model")
     if not settings.workspace.is_dir():

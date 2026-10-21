@@ -34,3 +34,4 @@ class RunResult:
     answer: str
     steps: int
     usage: dict = field(default_factory=dict)
+    last_usage: dict | None = None

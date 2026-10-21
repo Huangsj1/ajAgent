@@ -7,7 +7,7 @@ class OpenAIModel(HTTPModel):
     path = "/responses"
 
     def payload(self, context, tools):
-        return {"model": self.settings.model, "input": context, "store": False,
+        return {"model": self.settings.model, "max_output_tokens": self.settings.output_tokens, "input": context, "store": False,
                 "include": ["reasoning.encrypted_content"],
                 "tools": [{"type": "function", **tool.definition(), "strict": False} for tool in tools]}
 

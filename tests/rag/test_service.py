@@ -84,7 +84,7 @@ def test_agent_cli_registration(tmp_path, monkeypatch, flags, expected):
     from ajagent.core.types import RunResult
     config = tmp_path / 'config.toml'
     config.write_text('[rag]\nrerank=false\nsources=["local"]\n')
-    settings = argparse.Namespace(workspace=tmp_path, config_path=config, provider='deepseek', model='test',
+    settings = argparse.Namespace(memory=True, context_tokens=32000, output_tokens=4096, workspace=tmp_path, config_path=config, provider='deepseek', model='test',
                                   max_steps=2, max_output_chars=6000)
     monkeypatch.setattr(cli, 'load_config', lambda _: settings)
     monkeypatch.setattr(cli, 'DeepSeekModel', lambda *args: object())

@@ -23,6 +23,7 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 ajagent = "ajagent.cli:main"
+ajagent-memory = "ajagent.memory.cli:main"
 ajagent-rag = "ajagent.rag.cli:main"
 
 [project.optional-dependencies]
