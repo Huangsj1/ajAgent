@@ -2,7 +2,7 @@
 
 一个通过逐阶段实现来学习 agent 与 agent harness 的项目。使用 DeepSeek / OpenAI GPT，自行实现主循环、工具执行、上下文管理和任务协调。
 
-当前已完成 **Stage 0–4**：最小循环、双厂商工具层，以及可选的 Local / Semantic / Web 检索工具、Qwen embedding 和 reranker。以及上下文预算、会话恢复和显式长期记忆。分层说明与验证见下方文档。
+当前已完成 **Stage 0–5**：最小循环、双厂商工具层，以及可选的 Local / Semantic / Web 检索工具、Qwen embedding 和 reranker。上下文预算、会话恢复、显式长期记忆，以及带权限与验证的执行 harness。分层说明与验证见下方文档。
 
 - [阶段 TODO 与验收标准](docs/TODO.md)
 - [架构设计与主要流程图](docs/architecture.md)
@@ -226,3 +226,48 @@ memory = true
 会话事件先序列化到内存缓冲，在完整用户消息/模型与工具批次结束时合并写入；累计约 64 KiB 时提前刷新，run_agent 写入结束记录后由 finally 刷新（取消/异常时也会刷新已缓冲事件）。直接使用 Session.append 的调用者需在结束时调用 flush。没有后台线程或定时器，低流量时不会因为每个事件而打开文件。强制杀进程/掉电仍可能丢失未刷新的事件；当前不提供 fsync 级持久化保证。
 
 累计值以最近的 end 为检查点；被中断、尚未生成 end 的调用费用不在恢复累计值中。旧版本 end 保存的是当次运行用量，升级后将最后一个值作为基线，不会自动补算更早费用。
+
+## Stage 5：执行 Harness
+
+CLI 现在默认通过 `Runner` 调用同一个 `run_agent` 循环。它管理权限、预算、检查点、验证反馈与运行日志。已有 RAG、会话恢复和 session 累计 usage 保持原有语义。
+
+```bash
+# 写入前显示变更摘要，交互选择 once / session / no。
+uv run ajagent "读取 knowledge/01-study.md，写一份带本地来源链接的 study-summary.md"
+
+# 修改演示文件后，用指定命令验证；验证命令也需要权限。
+uv run ajagent --validate-command '["python3", "check_demo.py"]' "修复 demo.py，并运行检查"
+
+# 下一模型步骤开始前可输入补充；直接按 Enter 继续。
+uv run ajagent --interactive --max-tool-calls 10 --max-tokens 30000 --max-seconds 120 "检查项目"
+
+# 明确拒绝某工具；模型会收到结构化拒绝结果。
+uv run ajagent --deny-tool run_command "检查项目"
+
+# 离线查看或顺序回放已保存的摘要，不执行模型或工具。
+uv run ajagent-trace .ajagent/runs/<run_id>
+uv run ajagent-trace .ajagent/runs/<run_id> --replay
+```
+
+新增工具为 `write_file`、`run_command`、`read_artifact`。写入限制在 workspace，沿用路径检查，并显示最多 3000 字符的 diff；内容最多 100000 字符。命令接收 argv 列表、不使用 shell，仅允许 python/python3/pytest/rg，工作目录在 workspace 内，时间由 tool_timeout 与剩余运行预算共同限制，合并输出最多 12000 字节。**这不是安全沙箱**：获准运行的 Python 程序仍具有当前进程的文件和网络权限。当前子进程管理使用 POSIX 进程组，在 macOS/Linux 使用；不宣称 Windows 支持。
+
+权限 `once` 只允许本次；`session` 对写文件按目标路径授权、对命令按完整参数授权，并在恢复 session 后继续有效；deny 规则优先。只读工具默认允许。非交互输入不会自行批准写入或执行，模型收到 permission_required，运行会进入 waiting_for_user；可在终端用 `--resume` 继续。不要通过绕开 Runner 直接调用有副作用的 handler。
+
+```toml
+[harness]
+max_tool_calls = 30
+max_tokens = 100000
+max_seconds = 300
+deny_tools = []
+validation_command = []
+```
+
+example/local TOML 已同步以上配置。对应 CLI 参数优先，`--deny-tool` 与 TOML 拒绝列表合并。步数仍由 runtime.max_steps / --max-steps 管理。预算按**当前 run**计算，不限制整个 session 的历史累计；主模型、摘要请求、验证命令均计入相应预算。请求前估算输入加输出预留，收到响应后检查实际 token。Token 估算不是精确上界；超过预算的响应仍计入 usage，但不会继续执行工具。网络请求、重试等待和子进程使用剩余时间；进程内检索/模型计算只能在边界检查 wall-clock，不提供硬实时抢占。不计算未知模型价格。
+
+`before_tool` hook 可以在副作用前阻断；`after_tool` 在执行后运行，不承诺回滚；`before_finish` 在模型声称完成后验证。默认验证本轮修改的 Markdown 中**行内本地链接的目标文件是否存在**，不检查网页、锚点或引用的语义真实性；配置 validation_command 后还运行指定检查。失败会回填给模型，最多给两轮修订机会，之后 validation_failed；步数与其他预算可能更早结束。
+
+每次运行打印 Run ID，状态包括 running、waiting_for_user、completed、failed、cancelled；具体停止原因单独输出。`.ajagent/runs/<run_id>/events.jsonl` 用于观测，`checkpoint.json` 用于副作用状态检查，大工具结果放入 `artifacts/`，模型收到预览与读取路径，可通过 read_artifact 分段读取。会话 JSONL 仍负责协议恢复。两类日志及 artifact 对已配置的 API key、常见密钥字段和 token 前缀做脱敏；这不是任意敏感文本的自动识别器。
+
+副作用执行前立即保存 pending 标记，完整调用/结果批次写入 session 后才清除。Ctrl-C 会终止当前子进程组并保存 cancelled 状态；副作用尚未形成完整检查点时，恢复返回 unknown_effect，必须先检查日志和实际文件，再用 `--resume <session_id> --acknowledge-unknown` 明确继续。该参数表示“已核对”，不是自动重做或回滚。完整批次只回放已有消息，不由恢复逻辑再次执行工具；新的模型请求仍会经过权限判断。实现不保证 exactly-once，也不支持多个进程同时写同一会话。
+
+离线评测脚本数据见 `evals/cases/harness.jsonl`。假模型测试会在临时 workspace 里调用真实工具；trace 的 `--replay` 只显示既有事件，两者用途不同，也不宣称线上模型输出可确定性复现。验证记录见 [Stage 5](docs/experiments/harness-validation.md)。

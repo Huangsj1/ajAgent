@@ -13,12 +13,14 @@ If a tool fails, revise its arguments or choose another tool. Do not claim unobs
 
 
 def run_agent(prompt, model, registry, max_steps=8, max_output_chars=6000, on_tool=None,
-              system_prompt=SYSTEM, session=None, context_builder=None):
+              system_prompt=SYSTEM, session=None, context_builder=None, harness=None):
     summary_before = dict(context_builder.usage) if context_builder else {}
     try:
         result = _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
-                            system_prompt, session, context_builder)
-        if context_builder:
+                            system_prompt, session, context_builder, harness)
+        if harness:
+            result.usage = dict(harness.used)
+        elif context_builder:
             for key in result.usage:
                 # Add only summary calls made during this invocation.
                 result.usage[key] += context_builder.usage[key] - summary_before.get(key, 0)
@@ -35,7 +37,7 @@ def run_agent(prompt, model, registry, max_steps=8, max_output_chars=6000, on_to
 
 
 def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
-               system_prompt, session, context_builder):
+               system_prompt, session, context_builder, harness):
     groups = deepcopy(session.groups) if session else []
 
     def record(items):
@@ -53,12 +55,19 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
     previous_batch, repeats = None, 0
     for step in range(1, max_steps + 1):
         try:
+            if harness:
+                addition = harness.before_step(step)
+                if addition:
+                    record([{'role': 'user', 'content': addition}])
+            previous_covered = getattr(context_builder, "covered", 0)
             context = (context_builder.build(system_prompt, groups, model, list(registry.values()))
                        if context_builder else [{"role": "system", "content": system_prompt}] +
                        [item for group in groups for item in group])
             if session and context_builder:
                 session.append({'event': 'context', **context_builder.stats,
                                 'summary': context_builder.summary})
+            if harness:
+                harness.context_ready(previous_covered)
             turn = model.generate(context, list(registry.values()))
         except ContextError as error:
             return finish("context_error", str(error), step, usage)
@@ -77,10 +86,18 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
         items = list(turn.continuation_items)
         if not turn.tool_calls:
             record(items)
+            if harness:
+                harness.batch_finished()
+                stop, feedback = harness.before_finish(turn.text)
+                if stop:
+                    return finish(stop, '; '.join(feedback) or 'Explicit approval is required.', step, usage)
+                if feedback:
+                    record([{'role': 'user', 'content': 'Verification failed. Revise the work:\n' + '\n'.join(feedback)}])
+                    continue
             return finish("completed" if turn.text.strip() else "empty_output", turn.text, step, usage)
         batch = []
         for call in turn.tool_calls:
-            result = execute(call, registry)
+            result = harness.execute(call) if harness else execute(call, registry)
             if session:
                 session.append({'event': 'tool_result', 'result': asdict(result)})
             encoded = serialize(result, max_output_chars)
@@ -94,6 +111,8 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
             if on_tool:
                 on_tool(step, call, result)
         record(items)
+        if harness:
+            harness.batch_finished()
         # IDs can change while the same calls keep returning identical evidence.
         signature = sorted(batch)
         repeats = repeats + 1 if signature == previous_batch else 1

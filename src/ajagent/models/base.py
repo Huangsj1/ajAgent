@@ -21,11 +21,13 @@ class HTTPModel:
     def post(self, path, payload):
         # Retry only the HTTP request, never the enclosing agent step.
         for attempt in range(3):
+            budget = getattr(self, 'request_budget', None)
+            timeout = min(self.settings.timeout, budget.remaining_seconds()) if budget else self.settings.timeout
             try:
                 response = self.client.post(
                     self.settings.base_url.rstrip("/") + path, json=payload,
                     headers={"Authorization": "Bearer " + self.settings.api_key},
-                    timeout=self.settings.timeout,
+                    timeout=timeout,
                 )
             except httpx.RequestError:
                 if attempt == 2:
@@ -41,7 +43,8 @@ class HTTPModel:
                         return response.json()
                     except ValueError:
                         raise ModelError("Invalid JSON from model API") from None
-            self.sleep(0.5 * 2 ** attempt)
+            delay = 0.5 * 2 ** attempt
+            self.sleep(min(delay, budget.remaining_seconds()) if budget else delay)
 
     def generate(self, context, tools):
         try:

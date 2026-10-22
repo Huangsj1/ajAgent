@@ -14,6 +14,9 @@ class Session:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._pending = []
         self._pending_bytes = 0
+        self.clean = lambda value: value
+        self.grants = set()     # granted permission keys
+        self.run_id = None
         self.groups = []
         self.checkpoint = {}
         self.usage = {"input_tokens": 0, "output_tokens": 0}
@@ -22,6 +25,8 @@ class Session:
             events = [json.loads(line) for line in self.path.read_text().splitlines()]
             if events[0] != {'event': 'session', 'provider': provider, 'model': model}:
                 raise ValueError('Resume requires the original provider and model')
+            self.grants = {e['key'] for e in events if e['event'] == 'permission_granted'}
+            self.run_id = next((e['run_id'] for e in reversed(events) if e['event'] == 'harness_run'), None)
             # get the last context event
             self.checkpoint = next((e for e in reversed(events) if e['event'] == 'context'), {})
             # End events contain cumulative snapshots, not increments.
@@ -35,7 +40,7 @@ class Session:
 
     def append(self, event):
         """Buffer immutable JSON lines; cap pending data at roughly 64 KiB."""
-        line = json.dumps(event, ensure_ascii=False) + '\n'
+        line = json.dumps(self.clean(event), ensure_ascii=False) + '\n'
         self._pending.append(line)
         self._pending_bytes += len(line.encode('utf-8'))
         if self._pending_bytes >= 65536:

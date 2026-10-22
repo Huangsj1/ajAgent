@@ -15,6 +15,7 @@ class ToolSpec:
     description: str
     input_schema: dict
     handler: Callable
+    effect: str = "read"
 
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.input_schema}

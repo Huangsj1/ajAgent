@@ -2,27 +2,25 @@
 
 ```mermaid
 flowchart TD
-    A[Agent / CLI] --> H[加载项目指令与可选显式记忆]
-    H --> J[新建或恢复 JSONL 会话]
-    J --> Ctx[构建上下文 / 裁剪 / 必要时摘要]
-    Ctx --> E{启用 RAG?}
-    E -->|否| B[基础文件与数据库工具 / 直接回答]
-    E -->|是| T[额外注册 retrieve 工具]
-    T --> D{Agent 决定是否检索}
-    D -->|否| B
-    D -->|是| S[选择 local / semantic / web]
-    S --> L[ripgrep 文本 / Tree-sitter 符号]
-    S --> V[Qwen query embedding → HNSW]
-    S --> W[Tavily 搜索摘要]
-    L & V & W --> F[去重 + Reciprocal Rank Fusion]
-    F --> R[可选 Qwen Reranker]
-    R --> O[有界证据 + URI / 行号 / warnings]
-    O --> A
-    K[文档 / 代码 / PDF] --> C[解析 → 分块 → 内容 hash]
-    C --> Q[只计算新内容的 embedding]
-    C --> X[独立 txt 正文缓存]
-    Q --> I[vectors.npy + metadata.sqlite + hnsw.index]
-    I --> V
+    U[CLI / instructions / memory / session] --> R[Runner: policy / budget / hooks]
+    R --> L[run_agent: 唯一循环]
+    L --> C[Context builder / 必要时摘要]
+    C --> M[DeepSeek / GPT]
+    M --> D{输出}
+    D -->|工具调用| P[before_tool + allow / ask / deny]
+    P -->|允许副作用| I[保存 pending 检查点]
+    I --> T[执行工具 + after_tool]
+    P -->|只读允许| T
+    P -->|拒绝| O[结构化错误]
+    T --> O
+    O --> S[持久化完整消息批次 / 清除 pending]
+    S --> L
+    D -->|最终答案| V[before_finish 验证]
+    V -->|失败且修订少于两轮| L
+    V -->|通过 / 失败达上限| F[状态 + 停止原因 + session usage]
+    R -.观测.-> E[events.jsonl / artifacts]
+    R -->|取消 / 预算耗尽| F
+    R -->|恢复发现未知副作用| W[waiting_for_user / 核对后继续]
 ```
 
 
@@ -47,7 +45,7 @@ flowchart TD
     D -->|Empty / refusal / incomplete| E
 ```
 
-> 当前已实现 Stage 0–4。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
+> 当前已实现 Stage 0–5。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
 
 ## 目标流程
 
@@ -73,7 +71,7 @@ flowchart TD
     T -. delegate .-> A[Child Runner with isolated context]
 ```
 
-> 状态：**上述完整 harness 尚未实现**。Stage 1 只实现图中的模型 → 工具 → 回填 → 答案循环。其余模块按 [TODO](TODO.md) 逐步引入；本图不表示当前仓库已有这些功能。
+> 状态：Stage 5 已实现 Runner、状态、预算、权限、hooks、日志与恢复。图中 delegate/Child Runner 属于后续阶段，尚未实现。
 
 ## 1. 核心设计
 
@@ -99,7 +97,7 @@ flowchart TD
 | `extensions/` | 按需 skill 加载与可选 MCP 工具适配 | 6 |
 | `multi_agent/` | 角色配置、结构化 handoff、确定性路由、有界修订 | 7 |
 | `tasks/` | 长任务进度、检查点、反馈候选；独立选修模块 | 8 |
-| `evals/`（计划） | 后续固定用例与运行报告；评估成功率、证据、延迟和 token | 5 起 |
+| `evals/` | 后续固定用例与运行报告；评估成功率、证据、延迟和 token | 5 起 |
 
 依赖方向：CLI → Runner → loop/context/model/tool 接口。工具通过显式参数获得 workspace 和运行上下文，不反向导入 CLI；RAG 由 retrieval 工具调用，不能另起隐藏的 agent loop。
 
@@ -173,7 +171,7 @@ Stage 7 coordinator 顺序调用独立上下文的 researcher/writer/reviewer/re
 
 ## 8. 当前范围与后续维护
 
-Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 已实现 context/memory 和会话恢复；Stage 5 起的 harness 等模块仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
+Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 已实现 context/memory 和会话恢复；Stage 5 已实现 harness；Stage 6 起的外部工具与委派仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
 
 暂不做 Web UI、分布式执行、企业级权限、自动部署、复杂插件市场和多层 agent 递归。优先保持可读、可调试、可验证；新的模块应解决已遇到的问题。
 
@@ -256,3 +254,23 @@ SemanticIndex 的 root 是知识库源目录，不再绑定 agent workspace。in
 
 
 会话写入采用内存 JSONL 缓冲：完整 replay 批次、约 64 KiB 阈值、运行退出时刷新。`append` 不再每次打开文件；`record` 是批次检查点。`run_agent` 统一在 finally 刷新，即使模型失败或用户取消也执行。Session 从最近 end 恢复 usage 累计快照，run_agent 将本次主模型与摘要增量加到该基线上，更新内存 usage 并统一写入一个 end。CLI 只显示结果，不重复累计或写 end。last_usage 单独保留本次运行最后主模型响应的报告值。
+
+
+## Stage 5 当前实现
+
+| 文件 | 职责 |
+| --- | --- |
+| `harness/runner.py` | 组合现有循环，代理模型调用记录 usage/耗时；执行权限和 hooks；保存 pending 检查点；将中断映射为状态 |
+| `harness/state.py` | running/waiting_for_user/completed/failed/cancelled 与 reason 分离 |
+| `harness/budget.py` | 当前 run 的工具数、token、墙钟预算；步数沿用 loop |
+| `harness/policy.py` | allow/ask/deny，session 内目标路径或完整命令授权，deny 优先 |
+| `harness/events.py` | run_id/step/call_id 事件、已知密钥脱敏、artifact、临时文件替换 checkpoint |
+| `harness/hooks.py` | 三个 hook 点、修改文件跟踪、Markdown 本地目标检查和可选检查命令 |
+| `harness/trace.py` | 无执行行为的离线 trace 查看/回放，以及测试用 FakeModel |
+| `tools/execution.py` | 写入 diff 预览和工作区路径检查；argv 子进程、输出/超时限额、取消时清理进程组 |
+
+Runner 没有第二个推理循环；loop 只在步骤开始、上下文完成、工具执行、批次完成和最终候选答案处通知 harness。不传 harness 时仍可直接使用基础循环。已完成批次先写 session，再清除 pending；执行后尚未完成这一顺序时保持 unknown。未知副作用阻止新运行，要求显式核对。after_tool 无法撤销已经完成的写入。
+
+Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模型与摘要请求，取消/预算结束也记录已报告用量；last_usage 保留主模型的最后一次响应，摘要不覆盖它。恢复的历史 usage 不计入新 run 的预算。价格不在当前实现范围内。
+
+日志不复制无限工具输出；较大结果写到脱敏 artifact，协议结果只传预览和读取位置。Markdown 引用检查是局部语法/文件存在性检查，不能证明语义支持。进程内工作在边界检查预算；命令不是沙箱。完整限制和 CLI 参数见 README。

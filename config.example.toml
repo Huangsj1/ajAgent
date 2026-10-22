@@ -42,3 +42,10 @@ api_key = ""
 timeout = 30
 search_depth = "basic"
 max_content_chars = 2000
+
+[harness]
+max_tool_calls = 30
+max_tokens = 100000
+max_seconds = 300
+deny_tools = []
+validation_command = []

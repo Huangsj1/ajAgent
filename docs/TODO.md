@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料初次核对日期：2026-10-11；RAG 重构：2026-10-17。状态：Stage 0–4 已实现；Stage 3 新版通过分层测试与真实冒烟验证，当前仅保留最新实现与验证文档。Stage 4 已实现并完成离线验证与双厂商会话恢复冒烟，Stage 5 起尚未开始。
+资料初次核对日期：2026-10-11；RAG 重构：2026-10-17。状态：Stage 0–5 已实现；Stage 3 新版通过分层测试与真实冒烟验证，当前仅保留最新实现与验证文档。Stage 4 已实现并完成离线验证与双厂商会话恢复冒烟，Stage 5 已实现，Stage 6 起尚未开始。
 
 ## 1. 项目目标与约定
 
@@ -247,18 +247,18 @@ tests/test_memory.py
 
 **目标：** 在已有 loop 外加入执行管理。harness 管工具、上下文、状态和反馈，模型仍只负责产生下一步请求。
 
-- [ ] S5.1 建立 `Runner` 组合 loop、context、tools、session、policy，不再维护第二份推理循环。
-- [ ] S5.2 显式状态：running、waiting_for_user、completed、failed、cancelled；停止原因单独保存（step_limit、budget_limit、no_progress 等）。
-- [ ] S5.3 记录 JSONL 事件：model_started/finished、tool_started/finished、permission_requested、compacted、run_finished；携带 run_id、step、call_id、耗时、usage、结果摘要。
-- [ ] S5.4 日志与会话分别负责观测和恢复；敏感值不写入二者。大结果保存 artifact，模型只收摘要和读取位置。
-- [ ] S5.5 实现最小 allow/ask/deny：workspace 内只读自动允许，写文件/执行默认询问一次后可在本会话授权；拒绝也作为工具结果返回模型。
-- [ ] S5.6 添加 `write_file`（显示变更摘要）和受限 `run_command`（参数列表、工作目录、超时、输出限额）。本地子进程不是安全沙箱，演示只运行受控项目命令。
-- [ ] S5.7 实现 before_tool、after_tool、before_finish 三个 hook 点；权限判断在真实执行前完成，after_tool 不声称能撤销已发生操作。
-- [ ] S5.8 验证 hook：写完文档检查引用，修改演示代码后运行指定测试。失败结果回到 loop，最多修订两轮；模型说“完成”不是唯一完成条件。
-- [ ] S5.9 增加 Ctrl-C 取消，终止当前子进程并写入状态；支持在下一次循环开始前接收用户补充，不强求实时 UI。
-- [ ] S5.10 保存完成的 step/checkpoint；恢复时不重复已完成的副作用。崩溃在“执行后、落盘前”时标为结果未知，要求核对，不能假装保证 exactly-once。
-- [ ] S5.11 统一 step、tool_calls、token 和 wall-clock 上限；价格未知时只报告 token，不伪造费用。
-- [ ] S5.12 增加离线 trace 查看和假模型回放；回放不再次执行工具，也不宣称真实模型输出可确定性重现。
+- [x] S5.1 建立 `Runner` 组合 loop、context、tools、session、policy，不再维护第二份推理循环。
+- [x] S5.2 显式状态：running、waiting_for_user、completed、failed、cancelled；停止原因单独保存（step_limit、budget_limit、no_progress 等）。
+- [x] S5.3 记录 JSONL 事件：model_started/finished、tool_started/finished、permission_requested、compacted、run_finished；携带 run_id、step、call_id、耗时、usage、结果摘要。
+- [x] S5.4 日志与会话分别负责观测和恢复；敏感值不写入二者。大结果保存 artifact，模型只收摘要和读取位置。
+- [x] S5.5 实现最小 allow/ask/deny：workspace 内只读自动允许，写文件/执行默认询问一次后可在本会话授权；拒绝也作为工具结果返回模型。
+- [x] S5.6 添加 `write_file`（显示变更摘要）和受限 `run_command`（参数列表、工作目录、超时、输出限额）。本地子进程不是安全沙箱，演示只运行受控项目命令。
+- [x] S5.7 实现 before_tool、after_tool、before_finish 三个 hook 点；权限判断在真实执行前完成，after_tool 不声称能撤销已发生操作。
+- [x] S5.8 验证 hook：写完文档检查引用，修改演示代码后运行指定测试。失败结果回到 loop，最多修订两轮；模型说“完成”不是唯一完成条件。
+- [x] S5.9 增加 Ctrl-C 取消，终止当前子进程并写入状态；支持在下一次循环开始前接收用户补充，不强求实时 UI。
+- [x] S5.10 保存完成的 step/checkpoint；恢复时不重复已完成的副作用。崩溃在“执行后、落盘前”时标为结果未知，要求核对，不能假装保证 exactly-once。
+- [x] S5.11 统一 step、tool_calls、token 和 wall-clock 上限；价格未知时只报告 token，不伪造费用。
+- [x] S5.12 增加离线 trace 查看和假模型回放；回放不再次执行工具，也不宣称真实模型输出可确定性重现。
 
 **文件安排：**
 
@@ -269,7 +269,8 @@ src/ajagent/harness/
 ├── policy.py
 ├── hooks.py
 ├── events.py
-└── budget.py
+├── budget.py
+└── trace.py
 src/ajagent/tools/execution.py
 tests/test_harness.py
 tests/test_resume.py
