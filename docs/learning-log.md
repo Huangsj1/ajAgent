@@ -1,6 +1,6 @@
 # 当前学习进度
 
-更新日期：2026-10-21。仅保留当前实现对应的总结，详细计划见 [TODO](TODO.md)。
+更新日期：2026-10-22。仅保留当前实现对应的总结，详细计划见 [TODO](TODO.md)。
 
 | 阶段 | 当前成果 | 学习重点 |
 | --- | --- | --- |
@@ -13,7 +13,7 @@
 
 RAG 默认关闭；开启后由 agent 决定是否调用。设备 `auto` 优先 CUDA/MPS，最后 CPU；CUDA 使用 FP16。当前执行环境只能实测 CPU，3080 Ti 的性能仍需在对应机器验证。
 
-当前测试共 146 项，覆盖保留的 Stage 1/2 与分层 RAG。删除了旧 RAG 实现及其 21 项测试、旧索引和过期评测数据；当前原文已迁到 knowledge/，索引已在 knowledge/.index/ 重建；模型缓存保留。验证详情见 [RAG 验证](experiments/rag-validation.md)。
+当前测试共 167 项，覆盖保留的 Stage 1/2 与分层 RAG。删除了旧 RAG 实现及其 21 项测试、旧索引和过期评测数据；当前原文已迁到 knowledge/，索引已在 knowledge/.index/ 重建；模型缓存保留。验证详情见 [RAG 验证](experiments/rag-validation.md)。
 
 Stage 4 已完成短期上下文、会话恢复和显式长期记忆；Stage 5 的 harness 已完成，下一步是 Stage 6 的外部工具与委派。RAG 后续可继续研究大语料 recall/延迟、索引压缩与清理、可选引用校验。当前不把检索分数当作事实概率，也不声称引用位置就能证明语义支持。
 
@@ -28,3 +28,5 @@ Stage 4 新增 13 项离线测试；DeepSeek 与 OpenAI 均通过真实两轮 JS
 Session total usage 改为跨 resume 累计，最近 end 是累计快照；新增新会话归零、无 end 恢复、连续恢复与同对象复用、错误结束及摘要增量验证，全套 128 项通过。
 
 Stage 5 新增 18 项测试，DeepSeek/GPT 均完成真实读来源、写引用文档任务。详细结果见 [Harness 验证](experiments/harness-validation.md)。
+
+2026-10-22：整理可调默认值与配置传递，合并参数校验、超时控制和结束记录，移除重复状态输出及过时调试注释。新增 21 项配置生效/兼容性回归测试；现有知识库索引只读打开验证通过。详见 [配置说明](configuration.md)。

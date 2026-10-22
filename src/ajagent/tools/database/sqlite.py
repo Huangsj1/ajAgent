@@ -6,7 +6,8 @@ from ajagent.tools.base import ToolError, ToolSpec, schema
 
 
 def database_tool(workspace):
-    def query_sqlite(path, query, max_rows=50):
+    def query_sqlite(path, query, max_rows=None):
+        max_rows = workspace.options.sql_rows if max_rows is None else max_rows
         target = workspace.resolve(path)
         if not target.is_file():
             raise ToolError("not_found", "Database file does not exist")
@@ -15,8 +16,8 @@ def database_tool(workspace):
         try:
             allowed = {sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE}
             connection.set_authorizer(lambda action, *_: sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY)
-            connection.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 100_000)
+            connection.set_progress_handler(lambda: int(time.monotonic() > deadline), workspace.options.sql_progress_steps)
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, workspace.options.sql_value_bytes)
             cursor = connection.execute(query)
             rows = cursor.fetchmany(max_rows + 1)
             # Blobs are represented as hex so every result remains JSON serializable.
@@ -40,5 +41,5 @@ def database_tool(workspace):
 
     return ToolSpec("query_sqlite", "Run one read-only SELECT in a workspace SQLite database.", schema({
         "path": {"type": "string", "minLength": 1},
-        "query": {"type": "string", "minLength": 1, "maxLength": 10000},
-        "max_rows": {"type": "integer", "minimum": 1, "maximum": 100}}, ["path", "query"]), query_sqlite)
+        "query": {"type": "string", "minLength": 1, "maxLength": workspace.options.sql_query_chars},
+        "max_rows": {"type": "integer", "minimum": 1, "maximum": workspace.options.sql_max_rows}}, ["path", "query"]), query_sqlite)

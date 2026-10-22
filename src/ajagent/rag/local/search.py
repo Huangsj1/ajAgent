@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import time
+from ajagent.options import DEFAULTS
 from pathlib import Path
 from ajagent.rag.local.syntax import definitions, LANGUAGES
 from ajagent.rag.types import Hit, SearchResult, identifier
@@ -10,16 +11,20 @@ from ajagent.tools.files.workspace import Workspace
 
 
 class LocalSearch:
-    def __init__(self, root, config_path="config.local.toml", timeout=5, max_files=1000):
+    def __init__(self, root, config_path="config.local.toml", timeout=None, max_files=None, options=DEFAULTS):
+        self.options = options.retrieval
+        timeout = self.options.local_timeout if timeout is None else timeout
         target = Path(root).expanduser().absolute()
         self.target_file = target.name if target.is_file() else None
-        self.workspace = Workspace(target.parent if self.target_file else target, config_path, timeout)
+        self.workspace = Workspace(target.parent if self.target_file else target, config_path, timeout, options.tools)
         if self.target_file:
             self.workspace.resolve(self.target_file)
-        self.timeout, self.max_files = timeout, max_files
+        self.timeout = timeout
+        self.max_files = options.tools.max_scan_files if max_files is None else max_files
 
-    def search(self, query, limit=20, mode="text", glob=None):
-        if not query.strip() or len(query) > 2000 or not 1 <= limit <= 100 or mode not in ("text", "regex", "symbol"):
+    def search(self, query, limit=None, mode="text", glob=None):
+        limit = self.options.result_limit if limit is None else limit
+        if not query.strip() or len(query) > self.options.query_chars or not 1 <= limit <= self.options.backend_limit or mode not in ("text", "regex", "symbol"):
             raise ValueError("Invalid local search parameters")
         files, result = [], SearchResult()
         # 1. Collect all files in the workspace, skipping oversized files and applying glob filtering.
@@ -28,7 +33,7 @@ class LocalSearch:
         for name, path in candidates:
             if glob and not path.match(glob):
                 continue
-            if path.stat().st_size > 1_000_000:
+            if path.stat().st_size > self.workspace.options.max_file_bytes:
                 result.warnings.append(f"Skipped oversized file: {name}")
                 continue
             files.append((name, path))
@@ -55,8 +60,8 @@ class LocalSearch:
                             # extract the code excerpt for the symbol and create a Hit object
                             excerpt = encoded[symbol["start_byte"]:symbol["end_byte"]].decode()
                             result.hits.append(Hit(identifier(name, symbol["start_byte"], excerpt), "local", name,
-                                excerpt[:4000], symbol["name"], symbol["start_line"], symbol["end_line"],
-                                metadata={"kind": symbol["kind"], "truncated": len(excerpt) > 4000}))
+                                excerpt[:self.options.symbol_chars], symbol["name"], symbol["start_line"], symbol["end_line"],
+                                metadata={"kind": symbol["kind"], "truncated": len(excerpt) > self.options.symbol_chars}))
                 except (UnicodeError, ValueError):
                     result.warnings.append(f"Cannot parse {name}; use text search")
                 if len(result.hits) >= limit:
@@ -67,13 +72,13 @@ class LocalSearch:
             if not shutil.which("rg"):
                 raise RuntimeError("ripgrep is required for local text search")
             deadline = time.monotonic() + self.timeout
-            # handle 64 files at a time
-            for offset in range(0, len(files), 64):
+            # Bound each ripgrep batch.
+            for offset in range(0, len(files), self.options.rg_batch_files):
                 # create the ripgrep command, and use a subprocess to run it with a timeout
-                command = ["rg", "--json", "--no-ignore", "--max-count", "5", "--max-columns", "500", "--ignore-case"]
+                command = ["rg", "--json", "--no-ignore", "--max-count", str(self.options.rg_matches_per_file), "--max-columns", str(self.workspace.options.excerpt_chars), "--ignore-case"]
                 if mode == "text":
                     command.append("--fixed-strings")
-                command.extend(["--", query, *[name for name, _ in files[offset:offset + 64]]])
+                command.extend(["--", query, *[name for name, _ in files[offset:offset + self.options.rg_batch_files]]])
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     result.warnings.append("ripgrep timed out")

@@ -1,6 +1,7 @@
 """Per-run limits, checked at model/tool boundaries."""
 from dataclasses import dataclass
 import time
+from ajagent.options import DEFAULTS
 
 
 class BudgetExceeded(Exception):
@@ -9,9 +10,9 @@ class BudgetExceeded(Exception):
 
 @dataclass
 class Budget:
-    max_tool_calls: int = 30
-    max_tokens: int = 100000
-    max_seconds: float = 300
+    max_tool_calls: int = DEFAULTS.harness.max_tool_calls
+    max_tokens: int = DEFAULTS.harness.max_tokens
+    max_seconds: float = DEFAULTS.harness.max_seconds
 
     def __post_init__(self):
         import math

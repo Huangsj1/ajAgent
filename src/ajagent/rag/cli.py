@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--rerank', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--mode', choices=['text', 'regex', 'symbol'], default='text')
     parser.add_argument('--glob')
-    parser.add_argument('--limit', type=int, default=5)
+    parser.add_argument('--limit', type=int)
     args = parser.parse_args()
     try:
         sources = args.sources.split(',') if args.sources else None
@@ -32,11 +32,11 @@ def main():
             paths = settings.paths(Path(args.config).expanduser().resolve().parent)
             if args.command == 'update' and args.knowledge is None:
                 index = open_knowledge(paths['index'], cache=paths['cache'],
-                                       device=settings.device, config_path=args.config)
+                                       device=settings.device, config_path=args.config, options=settings.options)
                 result = index.update()
             else:
                 result = update_knowledge(paths['knowledge'], paths['index'], cache=paths['cache'],
-                                          device=settings.device, config_path=args.config)
+                                          device=settings.device, config_path=args.config, options=settings.options)
         else:
             if not args.query:
                 parser.error('search requires a query')

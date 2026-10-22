@@ -84,6 +84,7 @@ flowchart TD
 | 模块 | 实现方式与职责 | 引入阶段 |
 | --- | --- | --- |
 | `examples/minimal_agent.py` | 单文件、自行维护消息、工具字典和有界循环；保留教学用途 | 1 |
+| `options.py` | 不可变配置分组、统一默认值与校验，向各模块显式传递 | 5 后整理 |
 | `config.py` | 加载 TOML/环境变量；把密钥留在模型客户端侧，不进入模型上下文 | 2；阶段 1 内联最小加载 |
 | `cli.py` | 解析输入与配置选择，显示输出；不承载推理和工具逻辑 | 2 |
 | `core/types.py` | 少量 dataclass 定义消息、调用、结果、状态；不建设复杂类层次 | 2 |
@@ -260,7 +261,8 @@ SemanticIndex 的 root 是知识库源目录，不再绑定 agent workspace。in
 
 | 文件 | 职责 |
 | --- | --- |
-| `harness/runner.py` | 组合现有循环，代理模型调用记录 usage/耗时；执行权限和 hooks；保存 pending 检查点；将中断映射为状态 |
+| `harness/runner.py` | 组合现有循环，执行权限和 hooks；保存 pending 检查点；将中断映射为状态 |
+| `harness/model.py` | 观测模型调用、统计 usage/耗时；将预算传给 HTTP 层 |
 | `harness/state.py` | running/waiting_for_user/completed/failed/cancelled 与 reason 分离 |
 | `harness/budget.py` | 当前 run 的工具数、token、墙钟预算；步数沿用 loop |
 | `harness/policy.py` | allow/ask/deny，session 内目标路径或完整命令授权，deny 优先 |
@@ -274,3 +276,5 @@ Runner 没有第二个推理循环；loop 只在步骤开始、上下文完成�
 Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模型与摘要请求，取消/预算结束也记录已报告用量；last_usage 保留主模型的最后一次响应，摘要不覆盖它。恢复的历史 usage 不计入新 run 的预算。价格不在当前实现范围内。
 
 日志不复制无限工具输出；较大结果写到脱敏 artifact，协议结果只传预览和读取位置。Markdown 引用检查是局部语法/文件存在性检查，不能证明语义支持。进程内工作在边界检查预算；命令不是沙箱。完整限制和 CLI 参数见 README。
+
+配置与职责整理见 [configuration](configuration.md)：工具 prepare/invoke 统一、HTTP 超时单一归属、Session.finish 统一记录结束状态。

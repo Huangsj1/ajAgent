@@ -106,16 +106,17 @@ def test_agent_cli_forwards_external_paths(tmp_path, monkeypatch):
     from ajagent.core.types import RunResult
     config = tmp_path / 'config.toml'
     config.write_text('[rag]\nrerank=false\nsources=["local"]\n')
-    settings = argparse.Namespace(memory=True, context_tokens=32000, output_tokens=4096, workspace=tmp_path, config_path=config, provider='deepseek', model='test',
+    from ajagent.options import Options
+    settings = argparse.Namespace(options=Options(), memory=True, context_tokens=32000, output_tokens=4096, workspace=tmp_path, config_path=config, provider='deepseek', model='test',
                                   max_steps=2, max_output_chars=6000, tool_timeout=5)
-    monkeypatch.setattr(cli, 'load_config', lambda _: settings)
+    monkeypatch.setattr(cli, 'load_config', lambda _, **kwargs: settings)
     monkeypatch.setattr(cli, 'DeepSeekModel', lambda *a: object())
     original = service.build_service
     def build(root, rag, config_path):
         assert rag.index == str(tmp_path / 'outside-index')
         assert rag.local_path == str(tmp_path / 'outside-files')
         return original(root, rag, config_path)
-    monkeypatch.setattr(service, 'build_service', build)
+    monkeypatch.setattr(cli, 'build_service', build)
     monkeypatch.setattr(cli, 'run_agent', lambda *a, **k: RunResult('completed', 'hello', 1, {}))
     monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), '--rag',
         '--rag-index', str(tmp_path / 'outside-index'), '--rag-local-path', str(tmp_path / 'outside-files'), 'hello'])
@@ -135,6 +136,6 @@ def test_moved_index_and_source_mismatch(tmp_path):
     assert open_knowledge(moved, encoder=encoder).search('apple').hits[0].text == 'apple'
     other = tmp_path / 'other'
     other.mkdir()
-    with pytest.raises(ValueError, match='differs'):
+    with pytest.raises(ValueError, match='settings differ'):
         update_knowledge(other, moved, encoder=encoder)
     assert open_knowledge(moved, encoder=encoder).search('apple').hits

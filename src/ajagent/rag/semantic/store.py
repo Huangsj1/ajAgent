@@ -1,5 +1,6 @@
 """Immutable generations keep SQLite, vectors and HNSW in one published snapshot."""
 from pathlib import Path
+from ajagent.options import DEFAULTS
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -20,14 +21,15 @@ def digest(data):
 
 
 class SemanticIndex:
-    def __init__(self, root, directory, encoder, config_path='config.local.toml', source_directory='.'):
+    def __init__(self, root, directory, encoder, config_path='config.local.toml', source_directory='.', options=DEFAULTS):
+        self.options = options.retrieval
         self.root, self.directory = Path(root).resolve(), Path(directory).resolve()
         self.encoder = encoder
         self.source_directory = source_directory
-        self.workspace = Workspace(self.root, config_path, timeout=60)
+        self.workspace = Workspace(self.root, config_path, timeout=self.options.index_timeout, options=options.tools)
 
     @classmethod
-    def open(cls, directory, encoder, config_path='config.local.toml'):
+    def open(cls, directory, encoder, config_path='config.local.toml', options=DEFAULTS):
         """Open an existing index using its recorded source directory."""
         directory = Path(directory).expanduser().resolve()
         generation = directory / (directory / 'CURRENT').read_text().strip()
@@ -36,7 +38,7 @@ class SemanticIndex:
             if row is None:
                 raise ValueError('Index metadata is missing')
             root, fingerprint, source_directory, version = json.loads(row[0])
-            index = cls(root, directory, encoder, config_path, source_directory)
+            index = cls(root, directory, encoder, config_path, source_directory, options)
             index.check(db)
         return index
 
@@ -55,10 +57,14 @@ class SemanticIndex:
 
     def check(self, db):
         """Check that the index is compatible with the workspace and encoder"""
-        expected = json.dumps([str(self.root), self.encoder.fingerprint, self.source_directory, 'chunk-v3'])
+        version = 'chunk-v3'
+        for name in ('chunk_chars', 'hnsw_m', 'hnsw_construction', 'hnsw_seed'):
+            if getattr(self.options, name) != getattr(DEFAULTS.retrieval, name):
+                version += f':{name}={getattr(self.options, name)}'
+        expected = json.dumps([str(self.root), self.encoder.fingerprint, self.source_directory, version])
         row = db.execute('select value from settings').fetchone()
         if row and row[0] != expected:
-            raise ValueError('Index workspace/model differs; choose a new index directory')
+            raise ValueError('Index workspace/model/chunk/index settings differ; choose a new index directory')
         if not row:
             db.execute('insert into settings values (?)', (expected,))
 
@@ -89,15 +95,16 @@ class SemanticIndex:
                 if previous:
                     ann.load_index(str(previous / 'hnsw.index'))
                 else:
-                    ann.init_index(max_elements=16, ef_construction=200, M=16, random_seed=42)
+                    ann.init_index(max_elements=self.options.hnsw_capacity, ef_construction=self.options.hnsw_construction,
+                                   M=self.options.hnsw_m, random_seed=self.options.hnsw_seed)
                 stats = dict(added=0, updated=0, deleted=0, unchanged=0, embedded=0)
                 seen, additions = set(), []
                 # 3. iterate over all files in the workspace, skipping oversized files and applying glob filtering
                 for name, path in self.workspace.files(self.source_directory):
                     if path.is_relative_to(self.directory) or path.suffix.lower() not in SUPPORTED:
                         continue
-                    if path.stat().st_size > 10_000_000:
-                        raise ValueError(f'File exceeds 10 MB index limit: {name}')
+                    if path.stat().st_size > self.options.index_file_bytes:
+                        raise ValueError(f'File exceeds {self.options.index_file_bytes} byte index limit: {name}')
                     version = digest(path.read_bytes())
                     seen.add(name)
                     # skip unchanged files
@@ -111,7 +118,7 @@ class SemanticIndex:
                         ann.mark_deleted(label)
                     db.execute('update chunks set active=0 where path=?', (name,))
                     # chunk the file and store each chunk in texts directory
-                    for start, end, title, content in chunks(path, text):
+                    for start, end, title, content in chunks(path, text, self.options.chunk_chars):
                         key = digest(content.encode())
                         cached_text = texts / (key + '.txt')
                         if not cached_text.exists():
@@ -143,7 +150,7 @@ class SemanticIndex:
                     rows = np.asarray([vectors[cached[item[-1]]] if item[-1] in cached else fresh[item[-1]]
                                        for item in additions], dtype=np.float32)
                     labels = np.arange(len(vectors), len(vectors) + len(rows))
-                    ann.resize_index(max(16, len(vectors) + len(rows)))
+                    ann.resize_index(max(self.options.hnsw_capacity, len(vectors) + len(rows)))
                     ann.add_items(rows, labels)
                     db.executemany('insert into chunks values (?,?,?,?,?,?,?,1)',
                                    [(int(label), *item) for label, item in zip(labels, additions)])
@@ -161,8 +168,8 @@ class SemanticIndex:
             raise
 
     def search(self, query, limit=10):
-        if not query.strip() or not 1 <= limit <= 100:
-            raise ValueError('Nonempty query and limit 1..100 required')
+        if not query.strip() or not 1 <= limit <= self.options.backend_limit:
+            raise ValueError(f'Nonempty query and limit 1..{self.options.backend_limit} required')
         generation = self.current()
         if generation is None:
             return SearchResult(warnings=['Semantic index missing; run ajagent-rag index first'])
@@ -173,7 +180,7 @@ class SemanticIndex:
                 return SearchResult()
             ann = hnswlib.Index(space='cosine', dim=self.encoder.dimensions)
             ann.load_index(str(generation / 'hnsw.index'))
-            ann.set_ef(max(64, limit * 4))
+            ann.set_ef(max(self.options.hnsw_search, limit * self.options.hnsw_search_multiplier))
             # query the hnsw index for the top-k nearest neighbors of the query embedding
             labels, distances = ann.knn_query(self.encoder.encode([query], query=True), k=min(count, limit * 3))
             result, versions = SearchResult(), {}

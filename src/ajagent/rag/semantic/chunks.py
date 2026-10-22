@@ -1,5 +1,6 @@
 """Parse once; split prose by headings and code by syntax boundaries."""
 import re
+from ajagent.options import DEFAULTS
 from pathlib import Path
 from ajagent.rag.local.syntax import definitions, LANGUAGES
 
@@ -14,7 +15,7 @@ def parse(path):
     return path.read_text(encoding='utf-8')
 
 
-def chunks(path, text, max_chars=1800):
+def chunks(path, text, max_chars=DEFAULTS.retrieval.chunk_chars):
     lines = text.splitlines(keepends=True)
     boundaries = {0, len(lines)}
     names = {}

@@ -2,9 +2,9 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-import tomllib
+from ajagent.options import DEFAULTS, DEFAULT_CANDIDATES, Options, read_config
 import os
-from ajagent.rag.web.search import TavilySettings
+from ajagent.options import TavilySettings
 from ajagent.rag.types import SearchResult, identifier
 from ajagent.rag.device import validate_device
 
@@ -19,7 +19,8 @@ class RagSettings:
     cache: str = '.ajagent/models'
     rerank: bool = True
     device: str = 'auto'
-    candidates: int = 10
+    candidates: int = DEFAULT_CANDIDATES
+    options: Options = field(default_factory=Options, repr=False)
     tavily: TavilySettings = field(default_factory=TavilySettings, repr=False)
 
     def paths(self, base):
@@ -28,13 +29,15 @@ class RagSettings:
                 for name in ['knowledge', 'index', 'cache', 'local_path']}
 
     @classmethod
-    def load(cls, path, enabled=None, sources=None, rerank=None):
+    def load(cls, path, enabled=None, sources=None, rerank=None, config=None):
         path = Path(path)
-        config = tomllib.loads(path.read_text()) if path.exists() else {}
+        config = read_config(path) if config is None else config
         tavily = dict(config.get('tavily', {}))
         if 'TAVILY_API_KEY' in os.environ:
             tavily['api_key'] = os.environ['TAVILY_API_KEY']
-        settings = cls(**config.get('rag', {}), tavily=TavilySettings(**tavily))
+        options = Options.from_config(config)
+        values = dict(config.get('rag', {}))
+        settings = cls(**values, tavily=TavilySettings(**tavily), options=options)
         for name, value in [('enabled', enabled), ('sources', sources), ('rerank', rerank)]:
             if value is not None:
                 setattr(settings, name, value)
@@ -42,20 +45,22 @@ class RagSettings:
             raise ValueError('RAG sources must be a nonempty list of local, semantic, web')
         if any(type(getattr(settings, name)) is not bool for name in ('enabled', 'rerank')):
             raise ValueError('enabled and rerank must be booleans')
-        if type(settings.candidates) is not int or not 1 <= settings.candidates <= 30:
-            raise ValueError('candidates must be 1..30')
+        if type(settings.candidates) is not int or not 1 <= settings.candidates <= options.retrieval.rerank_candidates:
+            raise ValueError(f'candidates must be 1..{options.retrieval.rerank_candidates}')
         validate_device(settings.device)
         settings.tavily.validate()
         return settings
 
 
 class RetrievalService:
-    def __init__(self, backends, reranker=None, candidates=10):
+    def __init__(self, backends, reranker=None, candidates=DEFAULT_CANDIDATES, options=DEFAULTS.retrieval):
+        self.options = options
         self.backends, self.reranker, self.candidates = backends, reranker, candidates
 
-    def search(self, query, sources=None, limit=5, mode='text', glob=None):
+    def search(self, query, sources=None, limit=None, mode='text', glob=None):
+        limit = self.options.default_results if limit is None else limit
         selected = list(dict.fromkeys(sources if sources is not None else self.backends))
-        if not query.strip() or len(query) > 2000 or not 1 <= limit <= 20:
+        if not query.strip() or len(query) > self.options.query_chars or not 1 <= limit <= self.options.result_limit:
             raise ValueError('Invalid retrieval query or limit')
         if not selected or set(selected) - self.backends.keys():
             raise ValueError('Requested source is not enabled')
@@ -88,8 +93,8 @@ class RetrievalService:
                     merged[key] = hit
                 hit = merged[key]
                 hit.metadata['backend_scores'][source] = item.score
-                hit.metadata['rrf'] += 1 / (60 + rank)
-        candidates = sorted(merged.values(), key=lambda h: h.metadata['rrf'], reverse=True)[:30]
+                hit.metadata['rrf'] += 1 / (self.options.rrf_offset + rank)
+        candidates = sorted(merged.values(), key=lambda h: h.metadata['rrf'], reverse=True)[:self.options.rerank_candidates]
         for hit in candidates:
             hit.score = hit.metadata['rrf']
         if self.reranker and candidates:
@@ -122,14 +127,14 @@ def build_service(root, settings, config_path='config.local.toml'):
     paths = settings.paths(base)
     backends = {}
     if 'local' in settings.sources:
-        backends['local'] = LocalSearch(paths['local_path'] if settings.local_path else root, config_path)
+        backends['local'] = LocalSearch(paths['local_path'] if settings.local_path else root, config_path, options=settings.options)
     if 'semantic' in settings.sources:
-        encoder = QwenEncoder(paths['cache'], settings.device)
+        encoder = QwenEncoder(paths['cache'], settings.device, options=settings.options.retrieval)
         if (paths['index'] / 'CURRENT').exists():
-            backends['semantic'] = SemanticIndex.open(paths['index'], encoder, config_path)
+            backends['semantic'] = SemanticIndex.open(paths['index'], encoder, config_path, options=settings.options)
         else:
-            backends['semantic'] = SemanticIndex(paths['knowledge'], paths['index'], encoder, config_path)
+            backends['semantic'] = SemanticIndex(paths['knowledge'], paths['index'], encoder, config_path, options=settings.options)
     if 'web' in settings.sources:
-        backends['web'] = WebSearch(settings.tavily)
-    reranker = QwenReranker(paths['cache'], settings.device) if settings.rerank else None
-    return RetrievalService(backends, reranker, settings.candidates)
+        backends['web'] = WebSearch(settings.tavily, options=settings.options.retrieval)
+    reranker = QwenReranker(paths['cache'], settings.device, options=settings.options.retrieval) if settings.rerank else None
+    return RetrievalService(backends, reranker, settings.candidates, settings.options.retrieval)

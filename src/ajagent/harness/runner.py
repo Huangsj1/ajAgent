@@ -3,10 +3,11 @@ from dataclasses import asdict
 import json
 import time
 from pathlib import Path
-from ajagent.context.builder import estimate
+from ajagent.harness.model import ObservedModel
 from ajagent.core.loop import run_agent
 from ajagent.core.types import RunResult, ToolCall, ToolResult
-from ajagent.tools.registry import execute
+from ajagent.tools.registry import prepare, invoke
+from ajagent.options import DEFAULTS, RUNTIME
 from ajagent.tools.base import ToolError
 from ajagent.harness.budget import Budget, BudgetExceeded
 from ajagent.harness.events import Events, redactor
@@ -15,61 +16,19 @@ from ajagent.harness.policy import Policy
 from ajagent.harness.state import RunState
 
 
-class ObservedModel:
-    def __init__(self, model, runner):
-        self.model, self.runner = model, runner
-
-    def tool_output(self, result, call_id):
-        return self.model.tool_output(result, call_id)
-
-    def generate(self, context, tools):
-        runner = self.runner
-        reserve = getattr(getattr(self.model, 'settings', None), 'output_tokens', 0)
-        # 1. Check the budget
-        runner.budget.check(estimate([context, [t.definition() for t in tools]]) + reserve)
-        started = time.monotonic()
-        # 2. Record the model start event
-        runner.events.emit('model_started', runner.step, purpose='summary' if runner.building_context else 'agent')
-        settings = getattr(self.model, 'settings', None)
-        old_timeout = getattr(settings, 'timeout', None)
-        old_budget = getattr(self.model, 'request_budget', None)
-        if old_timeout is not None:
-            settings.timeout = min(old_timeout, runner.budget.remaining_seconds())
-        self.model.request_budget = runner.budget
-        try:
-            # 3. Generate the model turn
-            turn = self.model.generate(context, tools)
-        except BaseException as error:
-            runner.events.emit('model_finished', runner.step, error=type(error).__name__,
-                               elapsed=time.monotonic() - started)
-            raise
-        finally:
-            self.model.request_budget = old_budget
-            if old_timeout is not None:
-                settings.timeout = old_timeout
-        # 4. Record the model finish event and update the budget usage
-        for key in runner.used:
-            runner.used[key] += turn.usage.get(key, 0)
-        runner.budget.tokens = sum(runner.used.values())
-        if not runner.building_context:
-            runner.last_usage = dict(turn.usage) or None
-        runner.events.emit('model_finished', runner.step, elapsed=time.monotonic() - started,
-                           usage=turn.usage, result_summary=turn.text[:500])
-        runner.budget.check()
-        return turn
-
-
 class Runner:
     def __init__(self, model, registry, session, builder, execution, *, ask=None,
-                 budget=None, hooks=None, secrets=(), denied=(), supplement=None, loop=run_agent):
+                 budget=None, hooks=None, secrets=(), denied=(), supplement=None, loop=run_agent, options=DEFAULTS):
         self.model, self.registry, self.session, self.builder = model, registry, session, builder
         self.execution = execution
+        self.options = options.harness
+        self.output_limit = RUNTIME.max_output_chars
         self.clean = redactor(secrets)
         session.clean = self.clean
         self.events = Events(session.path.parent.parent, self.clean)
-        self.policy = Policy(session, ask, denied)
-        self.hooks = hooks or Hooks(execution.workspace)
-        self.budget = budget or Budget()
+        self.policy = Policy(session, ask, (*self.options.deny_tools, *denied))
+        self.hooks = hooks or Hooks(execution.workspace, list(self.options.validation_command) or None, self.options)
+        self.budget = budget or Budget(self.options.max_tool_calls, self.options.max_tokens, self.options.max_seconds)
         self.supplement, self.loop = supplement, loop
         self.state, self.step, self.repairs = RunState(), 0, 0
         self.completed_step = 0
@@ -81,10 +40,11 @@ class Runner:
         self.previous_run = session.run_id
         from ajagent.tools.base import ToolSpec, schema
         self.registry['read_artifact'] = ToolSpec('read_artifact', 'Read a bounded slice of a saved run artifact.', schema({
-            'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0, 'maximum': 10000000},
-            'length': {'type': 'integer', 'minimum': 1, 'maximum': 2000}}, ['path']), self.read_artifact)
+            'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 0, 'maximum': self.options.artifact_max_offset},
+            'length': {'type': 'integer', 'minimum': 1, 'maximum': self.options.artifact_read_chars}}, ['path']), self.read_artifact)
 
-    def read_artifact(self, path, offset=0, length=2000):
+    def read_artifact(self, path, offset=0, length=None):
+        length = self.options.artifact_read_chars if length is None else length
         target = Path(path)
         if target.is_symlink() or not target.resolve().is_relative_to(self.events.root.parent.resolve()) or target.parent.name != 'artifacts':
             raise ToolError('forbidden', 'Only run artifacts can be read here')
@@ -125,43 +85,35 @@ class Runner:
         except (ValueError, TypeError):
             logged_args = '<invalid JSON>'
         self.events.emit('tool_started', self.step, call.call_id, tool=call.name, arguments=logged_args)
-        tool = self.registry.get(call.name)
         args = {}
         try:
-            if tool is None:
-                result = execute(call, self.registry)
-            else:
-                from jsonschema import Draft202012Validator
-                from ajagent.tools.registry import reject_constant
-                args = json.loads(call.arguments, parse_constant=reject_constant)
-                if not Draft202012Validator(tool.input_schema).is_valid(args):
-                    raise ToolError('invalid_arguments', 'Arguments must match tool schema')
-                messages = self.hooks.before(call, args)
-                if messages:
-                    raise ToolError('hook_denied', '; '.join(messages))
-                description = {'tool': call.name, 'arguments': args}
-                if call.name == 'write_file':
-                    description = self.execution.preview(**args)
-                if tool.effect != 'read' and self.policy.key(tool, args) not in self.policy.grants:
-                    self.events.emit('permission_requested', self.step, call.call_id, tool=call.name,
-                                       summary=description)
-                    self.state.status = 'waiting_for_user'
-                    self.save()
-                decision = self.policy.decide(tool, args, self.clean(description))
-                self.state.status = 'running'
-                self.events.emit('permission_decided', self.step, call.call_id, tool=call.name, decision=decision)
-                if decision != 'allow':
-                    self.needs_permission |= decision == 'ask'
-                    raise ToolError('permission_required' if decision == 'ask' else 'permission_denied',
-                                    'Tool needs explicit approval' if decision == 'ask' else 'Tool denied by user or policy')
-                if tool.effect != 'read':
-                    self.pending.append({'call_id': call.call_id, 'tool': call.name,
-                                         'arguments': self.clean(args), 'status': 'unknown'})
-                    self.save()  # Persist intent BEFORE performing the side effect.
-                self.execution.timeout = min(self.execution.workspace.timeout, self.budget.remaining_seconds())
-                # execute the tool call and return the result
-                result = execute(call, self.registry)
-                self.hooks.after(call, args, result)
+            tool, args = prepare(call, self.registry)
+            messages = self.hooks.before(call, args)
+            if messages:
+                raise ToolError('hook_denied', '; '.join(messages))
+            description = {'tool': call.name, 'arguments': args}
+            if call.name == 'write_file':
+                description = self.execution.preview(**args)
+            if tool.effect != 'read' and self.policy.key(tool, args) not in self.policy.grants:
+                self.events.emit('permission_requested', self.step, call.call_id, tool=call.name,
+                                   summary=description)
+                self.state.status = 'waiting_for_user'
+                self.save()
+            decision = self.policy.decide(tool, args, self.clean(description))
+            self.state.status = 'running'
+            self.events.emit('permission_decided', self.step, call.call_id, tool=call.name, decision=decision)
+            if decision != 'allow':
+                self.needs_permission |= decision == 'ask'
+                raise ToolError('permission_required' if decision == 'ask' else 'permission_denied',
+                                'Tool needs explicit approval' if decision == 'ask' else 'Tool denied by user or policy')
+            if tool.effect != 'read':
+                self.pending.append({'call_id': call.call_id, 'tool': call.name,
+                                     'arguments': self.clean(args), 'status': 'unknown'})
+                self.save()  # Persist intent BEFORE performing the side effect.
+            self.execution.timeout = min(self.execution.workspace.timeout, self.budget.remaining_seconds())
+            # execute the tool call and return the result
+            result = invoke(call.call_id, tool, args)
+            self.hooks.after(call, args, result)
         except ToolError as error:
             result = ToolResult(call.call_id, False, error={'code': error.code, 'message': error.message})
         except (ValueError, TypeError):
@@ -170,13 +122,13 @@ class Runner:
             result = ToolResult(call.call_id, False, error={'code': 'io_error', 'message': 'Tool IO failed'})
         result = ToolResult(**self.clean(asdict(result)))
         encoded = json.dumps(asdict(result), ensure_ascii=False)
-        if len(encoded) > 6000:
+        if len(encoded) > min(self.options.artifact_threshold_chars, self.output_limit):
             path = self.events.artifact(asdict(result))
-            result.data = {'preview': encoded[:1500], 'artifact': str(path),
+            result.data = {'preview': encoded[:min(self.options.artifact_preview_chars, self.output_limit // 4)], 'artifact': str(path),
                            'hint': 'Use read_artifact to read a bounded slice', 'truncated': True}
         self.events.emit('tool_finished', self.step, call.call_id, tool=call.name,
                            elapsed=time.monotonic() - started, ok=result.ok,
-                           result_summary=str(result.data if result.ok else result.error)[:2000])
+                           result_summary=str(result.data if result.ok else result.error)[:self.options.tool_log_chars])
         return result
 
     def before_finish(self, answer):
@@ -194,12 +146,13 @@ class Runner:
             return 'permission_required', errors
         if not errors:
             return None, []
-        if self.repairs >= 2:
+        if self.repairs >= self.options.max_repairs:
             return 'validation_failed', errors
         self.repairs += 1
         return None, errors
 
-    def run(self, prompt, *, max_steps=8, max_output_chars=6000, on_tool=None, system_prompt='', acknowledge_unknown=False):
+    def run(self, prompt, *, max_steps=RUNTIME.max_steps, max_output_chars=RUNTIME.max_output_chars, on_tool=None, system_prompt='', acknowledge_unknown=False):
+        self.output_limit = max_output_chars
         baseline = dict(self.session.usage)
         if self.previous_run:
             previous = self.events.root.parent / self.previous_run / 'checkpoint.json'
@@ -226,14 +179,12 @@ class Runner:
         except (BudgetExceeded, KeyboardInterrupt) as error:
             reason = 'cancelled' if isinstance(error, KeyboardInterrupt) else 'budget_limit'
             total = {key: baseline[key] + self.used[key] for key in baseline}
-            self.session.usage = total
             result = RunResult(reason, 'Run cancelled' if reason == 'cancelled' else str(error), self.step, total, self.last_usage)
-            self.session.append({'event': 'end', 'status': reason, 'usage': total, 'last_usage': self.last_usage})
+            self.session.finish(result)
         except Exception:
             total = {key: baseline[key] + self.used[key] for key in baseline}
-            self.session.usage = total
             result = RunResult('harness_error', 'Execution failed; inspect the run checkpoint before resuming.', self.step, total, self.last_usage)
-            self.session.append({'event': 'end', 'status': result.status, 'usage': total, 'last_usage': self.last_usage})
+            self.session.finish(result)
         finally:
             self.session.flush()
         self.state.finish(result.status)

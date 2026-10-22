@@ -1,6 +1,8 @@
 """Qwen yes/no cross-encoder; only score the final token to bound memory."""
 from ajagent.rag.semantic.encoder import INSTRUCTION
 
+from ajagent.options import DEFAULTS
+
 REVISION = 'e61197ed45024b0ed8a2d74b80b4d909f1255473'
 
 PREFIX = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
@@ -8,7 +10,8 @@ SUFFIX = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
 
 
 class QwenReranker:
-    def __init__(self, cache='.ajagent/models', device='auto'):
+    def __init__(self, cache='.ajagent/models', device='auto', options=DEFAULTS.retrieval):
+        self.options = options
         self.cache, self.device, self.model = str(cache), device, None
 
     def load(self):
@@ -32,11 +35,11 @@ class QwenReranker:
         self.load()
         scores = []
         with torch.inference_mode():
-            for offset in range(0, len(documents), 4):
+            for offset in range(0, len(documents), self.options.reranker_batch):
                 bodies = [f'<Instruct>: {INSTRUCTION}\n<Query>: {query}\n<Document>: {text}'
-                          for text in documents[offset:offset + 4]]
+                          for text in documents[offset:offset + self.options.reranker_batch]]
                 tokens = self.tokenizer(bodies, add_special_tokens=False, truncation=True,
-                                        max_length=2048 - len(self.prefix) - len(self.suffix))
+                                        max_length=self.options.reranker_tokens - len(self.prefix) - len(self.suffix))
                 inputs = self.tokenizer.pad({'input_ids': [self.prefix + ids + self.suffix
                                                           for ids in tokens['input_ids']]},
                                             padding=True, return_tensors='pt').to(self.device)

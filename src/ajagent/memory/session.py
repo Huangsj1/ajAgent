@@ -3,10 +3,12 @@ import json
 from pathlib import Path
 import re
 from uuid import uuid4
+from ajagent.options import DEFAULTS
 
 
 class Session:
-    def __init__(self, root, provider, model, session_id=None):
+    def __init__(self, root, provider, model, session_id=None, options=DEFAULTS.memory):
+        self.options = options
         self.id = session_id or uuid4().hex
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', self.id):
             raise ValueError('Invalid session ID')
@@ -39,11 +41,11 @@ class Session:
             self.append({'event': 'session', 'provider': provider, 'model': model})
 
     def append(self, event):
-        """Buffer immutable JSON lines; cap pending data at roughly 64 KiB."""
+        """Buffer immutable JSON lines; flush at the configured byte threshold."""
         line = json.dumps(self.clean(event), ensure_ascii=False) + '\n'
         self._pending.append(line)
         self._pending_bytes += len(line.encode('utf-8'))
-        if self._pending_bytes >= 65536:
+        if self._pending_bytes >= self.options.session_buffer_bytes:
             self.flush()
 
     def flush(self):
@@ -60,3 +62,9 @@ class Session:
         self.append({'event': 'messages', 'items': items})
         self.groups.append(items)
         self.flush()
+
+    def finish(self, result):
+        """Store one cumulative usage snapshot for every termination path."""
+        self.usage = dict(result.usage)
+        self.append({'event': 'end', 'status': result.status, 'usage': result.usage,
+                     'last_usage': result.last_usage})

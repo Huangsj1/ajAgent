@@ -1,10 +1,12 @@
 """Hook points and small, opt-in completion checks."""
 import re
+from ajagent.options import DEFAULTS
 from urllib.parse import unquote, urlsplit
 
 
 class Hooks:
-    def __init__(self, workspace, validation_command=None):
+    def __init__(self, workspace, validation_command=None, options=DEFAULTS.harness):
+        self.options = options
         self.workspace = workspace
         self.validation_command = validation_command
         self.changed = set()
@@ -40,5 +42,5 @@ class Hooks:
             if not result.ok:
                 errors.append(str(result.error))
             elif result.data.get('exit_code') != 0:
-                errors.append('Validation command failed: ' + result.data.get('output', '')[:2000])
+                errors.append('Validation command failed: ' + result.data.get('output', '')[:self.options.validation_feedback_chars])
         return errors

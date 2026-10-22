@@ -2,6 +2,7 @@
 import time
 from typing import Protocol
 import httpx
+from ajagent.options import DEFAULTS
 from ajagent.core.types import ModelTurn
 
 
@@ -20,7 +21,8 @@ class HTTPModel:
 
     def post(self, path, payload):
         # Retry only the HTTP request, never the enclosing agent step.
-        for attempt in range(3):
+        options = getattr(self.settings, 'options', DEFAULTS).retry
+        for attempt in range(options.attempts):
             budget = getattr(self, 'request_budget', None)
             timeout = min(self.settings.timeout, budget.remaining_seconds()) if budget else self.settings.timeout
             try:
@@ -30,12 +32,12 @@ class HTTPModel:
                     timeout=timeout,
                 )
             except httpx.RequestError:
-                if attempt == 2:
-                    raise ModelError("Network error after 3 attempts") from None
+                if attempt == options.attempts - 1:
+                    raise ModelError(f"Network error after {options.attempts} attempts") from None
             else:
                 if response.status_code == 429 or response.status_code >= 500:
-                    if attempt == 2:
-                        raise ModelError(f"HTTP {response.status_code} after 3 attempts")
+                    if attempt == options.attempts - 1:
+                        raise ModelError(f"HTTP {response.status_code} after {options.attempts} attempts")
                 elif response.is_error:
                     raise ModelError(f"HTTP {response.status_code}; check model, credentials and parameters")
                 else:
@@ -43,7 +45,7 @@ class HTTPModel:
                         return response.json()
                     except ValueError:
                         raise ModelError("Invalid JSON from model API") from None
-            delay = 0.5 * 2 ** attempt
+            delay = options.backoff_seconds * 2 ** attempt
             self.sleep(min(delay, budget.remaining_seconds()) if budget else delay)
 
     def generate(self, context, tools):

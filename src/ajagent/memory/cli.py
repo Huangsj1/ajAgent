@@ -3,11 +3,13 @@ import argparse
 import json
 from pathlib import Path
 from ajagent.memory.long_term import Memory
+from ajagent.options import Options, read_config
 
 
 def main():
     parser = argparse.ArgumentParser(description='Explicit workspace memory')
     parser.add_argument('--workspace', default='.')
+    parser.add_argument('--config', default='config.local.toml')
     sub = parser.add_subparsers(dest='command', required=True)
     add = sub.add_parser('remember')
     add.add_argument('text')
@@ -22,7 +24,7 @@ def main():
         workspace = Path(args.workspace).resolve()
         if not workspace.is_dir():
             raise ValueError('Workspace must exist')
-        memory = Memory(workspace / '.ajagent')
+        memory = Memory(workspace / '.ajagent', Options.from_config(read_config(args.config)).memory)
         if args.command == 'remember':
             print(memory.remember(args.text, args.source, args.scope, args.id))
         elif args.command == 'list':

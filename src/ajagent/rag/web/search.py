@@ -1,6 +1,6 @@
 """Tavily SDK search: one request, evidence results, and explicit errors."""
-from dataclasses import dataclass, field
 import math
+from ajagent.options import DEFAULTS, TavilySettings
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from requests.exceptions import RequestException, HTTPError
@@ -10,22 +10,7 @@ from tavily.errors import (BadRequestError, ForbiddenError, InvalidAPIKeyError,
 from ajagent.rag.types import Hit, SearchResult, identifier
 
 
-@dataclass
-class TavilySettings:
-    api_key: str = field(default='', repr=False)
-    timeout: float = 30
-    search_depth: str = 'basic'
-    max_content_chars: int = 2000
-
-    def validate(self):
-        if type(self.max_content_chars) is not int or not 1 <= self.max_content_chars <= 20000:
-            raise ValueError('Tavily max_content_chars must be between 1 and 20000')
-        if not isinstance(self.api_key, str):
-            raise ValueError('Tavily api_key must be a string')
-        if isinstance(self.timeout, bool) or not isinstance(self.timeout, (int, float)) or not math.isfinite(self.timeout) or self.timeout <= 0:
-            raise ValueError('Tavily timeout must be positive')
-        if self.search_depth not in {'basic', 'advanced', 'fast', 'ultra-fast'}:
-            raise ValueError('Unsupported Tavily search_depth')
+TAVILY_MAX_RESULTS = 20  # Provider API contract.
 
 
 def canonical_url(url):
@@ -37,7 +22,8 @@ def canonical_url(url):
 
 
 class WebSearch:
-    def __init__(self, settings=None, client=None):
+    def __init__(self, settings=None, client=None, options=DEFAULTS.retrieval):
+        self.options = options
         self.settings = settings or TavilySettings()
         self.settings.validate()
         self.client = client
@@ -47,18 +33,19 @@ class WebSearch:
         message = str(message)
         if self.settings.api_key:
             message = message.replace(self.settings.api_key, '[REDACTED]')
-        message = re.sub(r'tvly-[\w-]+', '[REDACTED]', message)[:1000]
+        message = re.sub(r'tvly-[\w-]+', '[REDACTED]', message)[:self.options.web_error_chars]
         details = {'provider': 'tavily', 'status': 'error', 'error': code, 'attempts': attempts}
         if status_code is not None:
             details['http_status'] = status_code
         return SearchResult(warnings=[f'Tavily {code}: {message}'], diagnostics={'web': details})
 
-    def search(self, query, limit=5):
-        if not query.strip() or len(query) > 2000 or not 1 <= limit <= 100:
+    def search(self, query, limit=None):
+        limit = self.options.default_results if limit is None else limit
+        if not query.strip() or len(query) > self.options.query_chars or not 1 <= limit <= self.options.backend_limit:
             raise ValueError('Invalid web search parameters')
         if not self.settings.api_key.strip():
             return self.failure('missing_api_key', 'Set [tavily].api_key or TAVILY_API_KEY', attempts=0)
-        limit = min(limit, 20)  # Tavily accepts at most 20 results per request.
+        limit = min(limit, TAVILY_MAX_RESULTS)  # Tavily accepts at most 20 results per request.
         payload = {'query': query, 'max_results': limit, 'search_depth': self.settings.search_depth,
                    'topic': 'general', 'auto_parameters': False, 'include_answer': False,
                    'include_raw_content': False, 'include_images': False}

@@ -151,7 +151,7 @@ def test_offline_cases_and_trace_replay(tmp_path, monkeypatch, capsys):
         assert run.run(case['prompt']).status == case['expected']
         assert not (tmp_path / 'demo.txt').exists()
         # Replay only reads trace rows; there is no executor or model dependency.
-        monkeypatch.setattr('ajagent.harness.runner.execute', lambda *a: pytest.fail('No tool execution during replay'))
+        monkeypatch.setattr('ajagent.harness.runner.invoke', lambda *a: pytest.fail('No tool execution during replay'))
         monkeypatch.setattr(sys, 'argv', ['ajagent-trace', str(run.events.root), '--replay'])
         assert main() == 0
         assert 'run_finished' in capsys.readouterr().out

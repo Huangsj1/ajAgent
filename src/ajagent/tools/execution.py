@@ -5,12 +5,14 @@ import selectors
 import signal
 import subprocess
 import time
+from ajagent.options import DEFAULTS, RUNTIME
 from ajagent.tools.base import ToolError, ToolSpec, schema
 
 
-def command(argv, cwd, timeout=10, output_limit=12000):
-    if not argv or argv[0] not in {'python', 'python3', 'pytest', 'rg'}:
-        raise ToolError('forbidden', 'Allowed executables: python, python3, pytest, rg')
+def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=DEFAULTS.tools):
+    output_limit = options.command_output_bytes if output_limit is None else output_limit
+    if not argv or argv[0] not in options.allowed_commands:
+        raise ToolError('forbidden', 'Allowed executables: ' + ', '.join(options.allowed_commands))
     # No shell; descendants share a process group for cancellation and timeout.
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                start_new_session=True)
@@ -22,8 +24,8 @@ def command(argv, cwd, timeout=10, output_limit=12000):
         while selector.get_map():
             if time.monotonic() >= deadline:
                 raise ToolError('timeout', 'Command timed out; process group terminated')
-            for key, _ in selector.select(min(.1, max(0, deadline - time.monotonic()))):
-                chunk = os.read(key.fileobj.fileno(), 8192)
+            for key, _ in selector.select(min(options.command_poll_seconds, max(0, deadline - time.monotonic()))):
+                chunk = os.read(key.fileobj.fileno(), options.command_chunk_bytes)
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
@@ -49,18 +51,19 @@ def command(argv, cwd, timeout=10, output_limit=12000):
 class Execution:
     def __init__(self, workspace):
         self.workspace = workspace
+        self.options = workspace.options
         self.timeout = workspace.timeout
 
     def preview(self, path, content):
         """Preview the diff of a workspace file write"""
         target = self.workspace.resolve(path)
-        if target.exists() and (not target.is_file() or target.stat().st_size > 1_000_000):
-            raise ToolError('too_large', 'Target must be a file of at most 1 MB')
+        if target.exists() and (not target.is_file() or target.stat().st_size > self.options.max_file_bytes):
+            raise ToolError('too_large', f'Target must be a file of at most {self.options.max_file_bytes} bytes')
         before = target.read_text(encoding='utf-8') if target.exists() else ''
         diff = ''.join(difflib.unified_diff(before.splitlines(True), content.splitlines(True),
                                           fromfile=path, tofile=path))
         return {'path': path, 'before_chars': len(before), 'after_chars': len(content),
-                'diff': diff[:3000], 'diff_truncated': len(diff) > 3000}
+                'diff': diff[:self.options.diff_chars], 'diff_truncated': len(diff) > self.options.diff_chars}
 
     def write_file(self, path, content):
         change = self.preview(path, content)
@@ -73,13 +76,13 @@ class Execution:
         cwd = self.workspace.resolve(directory)
         if not cwd.is_dir():
             raise ToolError('not_found', 'Working directory does not exist')
-        return command(argv, cwd, self.timeout)
+        return command(argv, cwd, self.timeout, options=self.options)
 
     def specs(self):
         return [ToolSpec('write_file', 'Create or replace a UTF-8 workspace file after permission.', schema({
-            'path': {'type': 'string', 'minLength': 1, 'maxLength': 500},
-            'content': {'type': 'string', 'maxLength': 100000}}, ['path', 'content']), self.write_file, 'write'),
+            'path': {'type': 'string', 'minLength': 1, 'maxLength': self.options.path_chars},
+            'content': {'type': 'string', 'maxLength': self.options.write_chars}}, ['path', 'content']), self.write_file, 'write'),
             ToolSpec('run_command', 'Run an approved argv list in the workspace (not a sandbox).', schema({
-                'argv': {'type': 'array', 'minItems': 1, 'maxItems': 40,
-                         'items': {'type': 'string', 'maxLength': 2000}},
-                'directory': {'type': 'string', 'maxLength': 500}}, ['argv']), self.run_command, 'execute')]
+                'argv': {'type': 'array', 'minItems': 1, 'maxItems': self.options.command_max_args,
+                         'items': {'type': 'string', 'maxLength': self.options.command_arg_chars}},
+                'directory': {'type': 'string', 'maxLength': self.options.path_chars}}, ['argv']), self.run_command, 'execute')]

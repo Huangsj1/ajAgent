@@ -12,7 +12,6 @@ class OpenAIModel(HTTPModel):
                 "tools": [{"type": "function", **tool.definition(), "strict": False} for tool in tools]}
 
     def parse(self, data):
-        # print(f"OpenAIModel.parse: data = {data}")  # Debugging line
         items = data["output"]
         calls, text, refused = [], [], False
         for item in items:

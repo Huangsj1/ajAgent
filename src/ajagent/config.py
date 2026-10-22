@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
-import tomllib
+from ajagent.options import RUNTIME, MIN_TOOL_OUTPUT_CHARS, Options, read_config
 
 
 @dataclass
@@ -14,19 +14,20 @@ class Settings:
     base_url: str
     workspace: Path
     config_path: Path
-    max_steps: int = 8
-    timeout: float = 30
-    max_output_chars: int = 6000
-    tool_timeout: float = 5
+    max_steps: int = RUNTIME.max_steps
+    timeout: float = RUNTIME.timeout
+    max_output_chars: int = RUNTIME.max_output_chars
+    tool_timeout: float = RUNTIME.tool_timeout
     thinking: str = "disabled"
-    context_tokens: int = 32000
-    output_tokens: int = 4096
+    context_tokens: int = RUNTIME.context_tokens
+    output_tokens: int = RUNTIME.output_tokens
     memory: bool = True
+    options: Options = field(default_factory=Options, repr=False)
 
 
-def load_config(args):
+def load_config(args, config=None):
     path = Path(args.config).resolve()
-    config = tomllib.loads(path.read_text()) if path.exists() else {}
+    config = read_config(path) if config is None else config
     runtime = config.get("runtime", {})
 
     def value(name, default, env=None):
@@ -51,10 +52,11 @@ def load_config(args):
         raise ValueError("thinking is only supported for DeepSeek")
     settings = Settings(provider, model, key, section.get("base_url", endpoints[provider]),
                         Path(value("workspace", ".")).resolve(), path,
-                        int(value("max_steps", 8)), float(value("timeout", 30)),
-                        int(value("max_output_chars", 6000)), float(value("tool_timeout", 5)), thinking)
-    settings.context_tokens = int(value('context_tokens', 32000))
-    settings.output_tokens = int(value('output_tokens', 4096))
+                        int(value("max_steps", RUNTIME.max_steps)), float(value("timeout", RUNTIME.timeout)),
+                        int(value("max_output_chars", RUNTIME.max_output_chars)), float(value("tool_timeout", RUNTIME.tool_timeout)), thinking)
+    settings.options = Options.from_config(config)
+    settings.context_tokens = int(value('context_tokens', RUNTIME.context_tokens))
+    settings.output_tokens = int(value('output_tokens', RUNTIME.output_tokens))
     settings.memory = getattr(args, 'memory', None)
     if settings.memory is None:
         settings.memory = runtime.get('memory', True)
@@ -66,8 +68,8 @@ def load_config(args):
         raise ValueError("Configure the selected provider's key and model")
     if not settings.workspace.is_dir():
         raise ValueError("Workspace must be an existing directory")
-    if settings.max_steps < 1 or settings.max_output_chars < 1000:
-        raise ValueError("max_steps must be positive; max_output_chars must be at least 1000")
+    if settings.max_steps < 1 or settings.max_output_chars < MIN_TOOL_OUTPUT_CHARS:
+        raise ValueError(f"max_steps must be positive; max_output_chars must be at least {MIN_TOOL_OUTPUT_CHARS}")
     if any(not math.isfinite(n) or n <= 0 for n in (settings.timeout, settings.tool_timeout)):
         raise ValueError("Timeouts must be finite and positive")
     if not isinstance(settings.base_url, str) or not settings.base_url.startswith("https://"):
