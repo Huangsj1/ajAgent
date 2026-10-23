@@ -23,7 +23,7 @@ flowchart TD
 
 ## 配置文件
 
-配置现已拆分到 `config/`。入口 `config/config.local.toml` 的 include 加载 runtime、models、tools、rag、harness 分片；MCP 按需单独加载 `config/mcp.local.toml`。完整文件映射、初始化和路径规则见 [配置目录](../config/README.md)。
+配置现已拆分到 `config/`。入口 `config/config.local.toml` 的 include 加载 runtime、models、tools、rag、harness、coordination 分片；MCP 按需单独加载 `config/mcp.local.toml`。完整文件映射、初始化和路径规则见 [配置目录](../config/README.md)。
 
 ## 配置分组
 
@@ -134,3 +134,9 @@ uv run --all-extras ajagent '打开本地演示网页并读取正文'
 ```
 
 本次 Chromium 安装在 .venv 内。也可以使用 Playwright 默认用户缓存，但安装和运行应保持一致。运行时保留需要的 extras，避免 uv 移除未选中的可选依赖。
+
+## Stage 7 协作配置
+
+`config/coordination.local.toml` 控制是否默认启用 research workflow、角色模型/工具、节点步数以及最多一次节点重试、最多两轮修订。`--workflow single|research` 只覆盖本次任务模式。各角色工具与 `[tools].enabled` 求交集，不能绕过主工具开关和 deny 列表。默认同模型，可对角色配置 provider/model。
+
+角色使用项目指令和显式 Handoff，不继承主会话聊天历史与长期偏好。父级 harness 的 token/工具/时间预算覆盖所有角色和研究 worker。角色没有 workspace 写工具，由 coordinator 保存版本化产物。完整配置语义见 [多 agent README](../src/ajagent/multi_agent/README.md)。

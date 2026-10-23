@@ -15,13 +15,13 @@ from ajagent.tools.execution.runtime import Execution
 from ajagent.tools.web.fetch import fetch_tool
 
 
-def delegation_tool(parent, model_factory=None, client=None):
+def delegation_tool(parent, model_factory=None, client=None, *, allow_nested=False):
     options = parent.all_options
     limits = options.capabilities
     roles = {'researcher': limits.researcher_tools, 'reviewer': limits.reviewer_tools}
 
     def work(contract, role='researcher'):
-        if parent.parent is not None:
+        if parent.parent is not None and not allow_nested:
             raise ToolError('delegation_depth', 'Children cannot delegate')
         # Only explicitly selected read tools can cross this boundary.
         registry = {name: tool for name, tool in parent.registry.items()

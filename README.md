@@ -18,7 +18,7 @@ uv run ajagent '列出当前项目的源文件'
 
 统一工具配置与用法见 [Tools README](src/ajagent/tools/README.md)；MCP 持久连接见 [MCP README](src/ajagent/tools/mcp/README.md)。
 
-Stage 0–6 已完成。新增网页抓取、可选浏览器、Python 子进程、按需 skill、带 contract 的并行子任务、single-writer 提案与持久 MCP。示例：
+Stage 0–7 已完成。新增网页抓取、可选浏览器、Python 子进程、按需 skill、带 contract 的并行子任务、single-writer 提案与持久 MCP。示例：
 
 ```sh
 uv run ajagent '/skill research 阅读 knowledge/11-evidence.md，给出来源'
@@ -36,3 +36,11 @@ PLAYWRIGHT_BROWSERS_PATH=0 uv run --all-extras pytest -q
 所有工具组统一由 `config/tools.local.toml` 的 `[tools].enabled` 选择；不再使用零散的 RAG/browser/MCP CLI 开关。
 
 配置目录与首次初始化见 [config/README.md](config/README.md)，模型密钥位于 `config/models.local.toml`，Tavily 位于 `config/rag.local.toml`。
+
+Stage 7 提供 research → write → review → revise 协调流程：
+
+```sh
+uv run ajagent --workflow research '根据 knowledge/05-release-v2.md 说明当前缓存保留期'
+```
+
+配置见 `config/coordination.local.toml`，角色提示词在 `agents/`。各节点共享总预算，独立上下文；研究可并行委派，协调器统一保存版本，审阅通过才发布 final.md。详见 [协作实现](src/ajagent/multi_agent/README.md) 和 [60 次真实对比](docs/experiments/multi-agent-comparison.md)。当前小任务样本中多 agent 成本更高、通过率更低，普通任务仍默认使用单 agent。

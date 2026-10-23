@@ -4,6 +4,10 @@
 flowchart TD
     U[CLI / config / memory / session] --> TM[ToolManager / 单一配置入口]
     TM --> R[Runner: policy / budget / hooks]
+    TM --> CO[可选 Coordinator / 共享预算 / 单一发布]
+    CO --> N[research → write → review → revise 独立 Runner]
+    N --> L
+    CO --> A[版本化产物 / final 或 partial]
     R --> L[run_agent: 唯一循环]
     L --> C[Context builder / 必要时摘要]
     C --> M[DeepSeek / GPT]
@@ -304,3 +308,11 @@ Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模
 详细字段、目录职责与数据流见 [Tools README](../src/ajagent/tools/README.md)、[MCP README](../src/ajagent/tools/mcp/README.md) 和 [配置说明](configuration.md)。
 
 参考 [Claude Code 子代理](https://code.claude.com/docs/en/sub-agents) 的独立上下文/工具访问、[Skills](https://code.claude.com/docs/en/skills) 的按需指导，以及 [MCP 传输规范](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)。这是本项目的简化实现，不宣称复刻闭源内部代码。
+
+## Stage 7：确定性多角色协调
+
+`multi_agent/runtime.py` 复用现有 CLI 设置和模型适配器；`roles.py` 为角色构建独立 Runner/Session/ContextBuilder 与分层 Budget；`handoff.py` 定义显式任务和产出契约；`coordinator.py` 路由研究、写作、审阅和有限修订并唯一发布 final.md。各节点仍调用同一 run_agent。
+
+只有研究角色可显式复用 Stage 6 的并行 delegate，worker 不继续委派；权限和费用向父级传播。writer/reviser 将文稿作为结构化输出返回，由 coordinator 保存 draft-vN，reviewer 不直接写稿。research 的实际来源 ID 和有界观察内容保存在 evidence.json，所有角色通过有限 Handoff 交流，不共享聊天历史。最终 Sources 表给出引用定位；语义支持仍由 reviewer 检查，不能将 ID 有效等同于事实正确。
+
+失败、取消和预算耗尽保留已有产物；未通过审阅不会创建 final.md。workflow 续跑留给 Stage 8。模块与流程细节见 [multi_agent README](../src/ajagent/multi_agent/README.md)，真实收益/成本见 [对比报告](experiments/multi-agent-comparison.md)。

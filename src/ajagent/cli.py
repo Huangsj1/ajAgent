@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 import httpx
+from ajagent.multi_agent.roles import CoordinationOptions
+from ajagent.multi_agent.runtime import build_coordinator
 from ajagent.config import load_config
 from ajagent.options import DEFAULT_CONFIG_PATH, read_config
 from ajagent.core.loop import run_agent, SYSTEM
@@ -49,6 +51,7 @@ def supplement(step):
 def build_parser():
     parser = argparse.ArgumentParser(description="A small agent with a permission-aware execution harness")
     parser.add_argument("prompt")
+    parser.add_argument("--workflow", choices=["single", "research"], help="Override the configured workflow")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--provider", choices=["deepseek", "openai"])
     parser.add_argument("--model")
@@ -75,11 +78,16 @@ def main():
         config = read_config(args.config)
         settings = load_config(args, config=config)
         options = settings.options
+        coordination = CoordinationOptions.load(config)
+        coordinated = args.workflow == "research" or (args.workflow is None and coordination.enabled)
+        if coordinated and args.resume:
+            raise ValueError("Workflow resume is not supported; start a new coordinated task")
         registry = {}
         system_prompt = SYSTEM
         instructions = settings.workspace / 'AJAGENT.md'
         if instructions.is_file():
             system_prompt += '\nProject instructions:\n' + instructions.read_text(encoding='utf-8')
+        role_instructions = system_prompt
         if settings.memory:
             system_prompt += Memory(settings.workspace / '.ajagent', options.memory).context()
         session = Session(settings.workspace / '.ajagent', settings.provider, settings.model, args.resume, options.memory)
@@ -120,11 +128,20 @@ def main():
             session.append({'event': 'system', 'content': system_prompt})
             print(f'Run: {runner.events.id}')
             print('[Running Agent]...')
-            result = runner.run(prompt, max_steps=settings.max_steps,
-                                max_output_chars=settings.max_output_chars, on_tool=trace,
-                                system_prompt=system_prompt, acknowledge_unknown=args.acknowledge_unknown)
+            if coordinated:
+                runner.output_limit = settings.max_output_chars
+                workflow = build_coordinator(runner, settings, config, coordination, client, role_instructions)
+                result = workflow.run(prompt)
+                print(f'Workflow artifacts: {workflow.directory}')
+            else:
+                result = runner.run(prompt, max_steps=settings.max_steps,
+                                    max_output_chars=settings.max_output_chars, on_tool=trace,
+                                    system_prompt=system_prompt, acknowledge_unknown=args.acknowledge_unknown)
         print(f'Harness: {runner.state.status} | Reason: {runner.state.reason}')
-        print(f'Context (estimated): {builder.stats}')
+        if coordinated:
+            print(f'Workflow nodes: {result.steps}')
+        else:
+            print(f'Context (estimated): {builder.stats}')
         print(f"[Finished] Status: {result.status}\n{result.answer}\nTotal usage (session): {result.usage}\nLast model request usage: {result.last_usage}")
         return 0 if result.status == "completed" else 1
     except ToolError as error:

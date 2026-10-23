@@ -18,6 +18,7 @@ done
 | `models` | DeepSeek / OpenAI 模型与 API key |
 | `tools` | 工具组开关、skills/MCP 路径、工具限额、委派与并发参数 |
 | `rag` | 知识库、索引、embedding/reranker、检索限额和 Tavily key |
+| `coordination` | 协作默认开关、角色提示词路径、角色模型/工具裁剪、节点重试与修订上限 |
 | `harness` | 执行预算、artifact、日志、验证与拒绝列表 |
 | `mcp` | 独立的 server 清单，由 MCPManager 按需加载 |
 

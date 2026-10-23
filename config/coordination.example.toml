@@ -1,0 +1,16 @@
+[coordination]
+enabled = false
+roles_path = "../agents"
+max_revisions = 2
+node_retries = 1
+node_steps = 8
+
+# Omitted provider/model inherit the main selection. Tools intersect enabled tools.
+[coordination.roles.researcher]
+tools = ["read_file", "list_files", "search_files", "retrieve", "fetch_url", "query_sqlite", "delegate"]
+[coordination.roles.writer]
+tools = []
+[coordination.roles.reviewer]
+tools = ["read_file", "search_files"]
+[coordination.roles.reviser]
+tools = []

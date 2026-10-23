@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料初次核对日期：2026-10-11；当前状态更新：2026-10-22。Stage 0–6 已实现，203 项测试通过；Stage 6 已完成双厂商真实委派、Chromium 本地交互和 MCP stdio 验证。下一阶段为 Stage 7 多 agent 协调。
+资料初次核对日期：2026-10-11；当前状态更新：2026-10-23。Stage 0–7 已实现，Stage 7 完成双厂商真实 workflow smoke 与 60 次单/多 agent 对比。下一阶段为可选 Stage 8 长任务与恢复。
 
 ## 1. 项目目标与约定
 
@@ -340,16 +340,18 @@ tests/test_delegation.py
 
 **目标：** 实现可解释的小型协作系统，并比较是否值得多花请求和 token。
 
-- [ ] S7.1 先做确定性、顺序的 coordinator：research → write → review → revise；每个节点是独立角色配置的 Runner。
-- [ ] S7.2 Researcher 产出事实、证据 ID、未解决问题；writer 产出草稿和引用；reviewer 产出带定位的 issues 与 pass/fail；reviser 根据 issues 改稿。
-- [ ] S7.3 Coordinator 负责路由和状态，不让角色自行宣告整个任务成功。review 通过则结束，失败最多 revise 两轮，仍失败返回草稿及未解决问题。
-- [ ] S7.4 定义 Handoff：task_id、goal、inputs、evidence_ids、artifact_paths、acceptance_criteria、remaining_budget。只传必要信息。
-- [ ] S7.5 各角色可选择 DeepSeek/GPT，但默认先用相同模型隔离“角色分工”和“模型差异”的影响。
-- [ ] S7.6 产物使用独立目录和版本号；只有 coordinator 决定最终输出，不让多个角色同时覆盖同一个文件。
-- [ ] S7.7 工具权限按角色裁剪：researcher 读/检索，writer/reviser 写自己的产物，reviewer 读/检查；各自上下文隔离。
-- [ ] S7.8 某节点失败记录 failure，最多一次明确重试或返回 partial；不能把空输出当合格 handoff。
-- [ ] S7.9 将现有并行 delegate/task contract/single-writer 接入 coordinator，汇总研究冲突与重复证据；基础并行 worker 已完成，协调层验收尚未完成。
-- [ ] S7.10 用相同资料和 10 个任务比较单 agent 与多 agent；各跑 3 次，记录引用支持、任务完成率、延迟、token 和失败原因。控制总预算，允许结论是“多 agent 没有更好”。
+- [x] S7.1 先做确定性、顺序的 coordinator：research → write → review → revise；每个节点是独立角色配置的 Runner。
+- [x] S7.2 Researcher 产出事实、证据 ID、未解决问题；writer 产出草稿和引用；reviewer 产出带定位的 issues 与 pass/fail；reviser 根据 issues 改稿。
+- [x] S7.3 Coordinator 负责路由和状态，不让角色自行宣告整个任务成功。review 通过则结束，失败最多 revise 两轮，仍失败返回草稿及未解决问题。
+- [x] S7.4 定义 Handoff：task_id、goal、inputs、evidence_ids、artifact_paths、acceptance_criteria、remaining_budget。只传必要信息。
+- [x] S7.5 各角色可选择 DeepSeek/GPT，但默认先用相同模型隔离“角色分工”和“模型差异”的影响。
+- [x] S7.6 产物使用独立目录和版本号；只有 coordinator 决定最终输出，不让多个角色同时覆盖同一个文件。
+- [x] S7.7 工具权限按角色裁剪：researcher 读/检索，writer/reviser 返回自己的产物，由 coordinator 单一落盘，reviewer 读/检查；各自上下文隔离。
+- [x] S7.8 某节点失败记录 failure，最多一次明确重试或返回 partial；不能把空输出当合格 handoff。
+- [x] S7.9 将现有并行 delegate/task contract/single-writer 接入 coordinator，汇总研究冲突与重复证据；已验证协调层研究委派、共享预算和单一写入边界。
+- [x] S7.10 用相同资料和 10 个任务比较单 agent 与多 agent；各跑 3 次，记录引用支持、任务完成率、延迟、token 和失败原因。控制总预算，允许结论是“多 agent 没有更好”。
+
+**实现记录：** 独立角色 Runner、有界契约重试和修订、实际证据 ID 校验、版本化单一发布。60 次真实对比中 single 综合通过 28/30、multi 26/30；多 agent 未展示优势，预算与输出失败均保留在 [报告](experiments/multi-agent-comparison.md)。
 
 **文件安排：**
 
@@ -357,6 +359,8 @@ tests/test_delegation.py
 src/ajagent/multi_agent/
 ├── roles.py
 ├── handoff.py
+├── runtime.py
+├── README.md
 └── coordinator.py
 agents/
 ├── researcher.md
@@ -437,4 +441,4 @@ comparisons/README.md
 
 建议从以下范围开始：
 
-> 按 docs/TODO.md 实现 Stage 4，先阅读 docs/architecture.md 和已完成的 RAG 模块。保留已有示例与双厂商工具循环，新增上下文管理、会话历史与显式长期记忆；不实现后续阶段。代码使用简洁英文注释，配置中不写真实 API key。完成离线验证，更新 README、architecture 和 TODO；真实 API 验证只使用已配置的厂商凭据，未运行的验证如实标注。
+> 按 docs/TODO.md 实现可选 Stage 8。先阅读 architecture 和 multi_agent/README.md，保留当前统一配置与共享预算，新增长任务进度、交接与显式恢复；不提前实现 Stage 9 优化。代码使用简洁英文注释，完成边界测试并更新文档。

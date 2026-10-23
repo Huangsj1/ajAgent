@@ -41,3 +41,9 @@ Stage 6 新增 25 项测试；Chromium 本地动态点击、官方 MCP SDK 的�
 配置迁入 `config/`，入口 include 组合 runtime、models、tools、rag、harness 分片；MCP 清单独立按需加载。保留本地凭据与用户参数，调整相对路径，统一 CLI/RAG/最小示例的默认入口。支持原有单文件配置，并增加分片合并、错误 include 与模板初始化回归。
 
 测试服务器移至根目录 `mcp/`：add 为 stdio，state 支持 stdio / Streamable HTTP；测试与手动调试共用服务器脚本。完整回归 206 passed（包含浏览器）；实际本地 MCP 配置调用 add(2, 3) 返回 5。没有调用收费模型或打印凭据。
+
+### Stage 7：协调的代价
+
+实现显式 Handoff、独立角色 Runner、版本化输出和最多两轮 review/revise。与 Stage 6 复用工具调度和分层预算，研究 worker 可并行，writer/reviser 的输出统一由 coordinator 保存。JSON 合同与证据 ID 校验能发现格式与来源错误，但语义正确性仍需审阅，不能被 ID 检查替代。
+
+真实 smoke 暴露了长期问候偏好污染机器可读输出的问题，因此角色只继承项目指令和本次契约，隔离会话偏好。DeepSeek/GPT 完整流程均通过。10 个任务各模式运行 3 次后，多 agent 综合通过 26/30，单 agent 28/30，多 agent 使用约 4.35 倍 token；保留全部失败，不为了展示多 agent 而选择最好样本。小任务默认单 agent，复杂协作的收益需要更大任务集进一步测量。
