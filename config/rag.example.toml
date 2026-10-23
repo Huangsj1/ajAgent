@@ -1,0 +1,45 @@
+[rag]
+sources = ["local", "semantic"]
+knowledge = "../knowledge"
+index = "../knowledge/.index"
+cache = "../.ajagent/models"
+rerank = true
+device = "auto"
+candidates = 10
+local_path = "" # Empty uses the agent workspace; may be an external directory or file.
+
+[tavily]
+api_key = ""
+timeout = 30
+search_depth = "basic"
+max_content_chars = 2000
+
+[limits.retrieval]
+query_chars = 2000
+result_limit = 20
+backend_limit = 100
+default_results = 5
+local_timeout = 5
+rerank_candidates = 30
+rrf_offset = 60
+symbol_chars = 4000
+rg_batch_files = 64
+rg_matches_per_file = 5
+chunk_chars = 1800
+index_file_bytes = 10000000
+index_timeout = 60
+hnsw_capacity = 16
+hnsw_m = 16
+hnsw_construction = 200
+hnsw_seed = 42
+hnsw_search = 64
+hnsw_search_multiplier = 4
+embedding_batch = 8
+embedding_tokens = 1024
+reranker_batch = 4
+reranker_tokens = 2048
+envelope_chars = 300
+web_error_chars = 1000
+embedding_dimensions = 1024
+
+# Stage 6: external tools and one-level delegation.

@@ -113,13 +113,13 @@ def test_agent_cli_forwards_external_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, 'DeepSeekModel', lambda *a: object())
     original = service.build_service
     def build(root, rag, config_path):
-        assert rag.index == str(tmp_path / 'outside-index')
-        assert rag.local_path == str(tmp_path / 'outside-files')
+        assert rag.paths(config.parent)['index'] == tmp_path / 'outside-index'
+        assert rag.paths(config.parent)['local_path'] == tmp_path / 'outside-files'
         return original(root, rag, config_path)
-    monkeypatch.setattr(cli, 'build_service', build)
+    monkeypatch.setattr(service, 'build_service', build)
     monkeypatch.setattr(cli, 'run_agent', lambda *a, **k: RunResult('completed', 'hello', 1, {}))
-    monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), '--rag',
-        '--rag-index', str(tmp_path / 'outside-index'), '--rag-local-path', str(tmp_path / 'outside-files'), 'hello'])
+    config.write_text('[tools]\nenabled=["files", "retrieval"]\n[rag]\nrerank=false\nsources=["local"]\nindex="outside-index"\nlocal_path="outside-files"\n')
+    monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), 'hello'])
     assert cli.main() == 0
 
 

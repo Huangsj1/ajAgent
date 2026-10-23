@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料初次核对日期：2026-10-11；RAG 重构：2026-10-17。状态：Stage 0–5 已实现；Stage 3 新版通过分层测试与真实冒烟验证，当前仅保留最新实现与验证文档。Stage 4 已实现并完成离线验证与双厂商会话恢复冒烟，Stage 5 已实现，Stage 6 起尚未开始。
+资料初次核对日期：2026-10-11；当前状态更新：2026-10-22。Stage 0–6 已实现，203 项测试通过；Stage 6 已完成双厂商真实委派、Chromium 本地交互和 MCP stdio 验证。下一阶段为 Stage 7 多 agent 协调。
 
 ## 1. 项目目标与约定
 
@@ -76,8 +76,8 @@
 **目标：** 确定怎样配置、运行和记录学习，不提前搭建框架。
 
 - [x] S0.1 建立 `pyproject.toml`、`.python-version` 与 `uv.lock`；使用 uv 管理 Python 3.13 环境，基础依赖为 httpx，开发依赖为 pytest。
-- [x] S0.2 建立 `config.example.toml`（空 key/model）与忽略的 `config.local.toml`，等待用户填写。
-- [x] S0.3 在创建真实配置之前，将 `config.local.toml`、`.env`、`.venv/`、`.ajagent/`、Python 缓存加入 `.gitignore`；明确忽略文件不会清除已经提交的秘密。
+- [x] S0.2 建立 `config/config.example.toml`（空 key/model）与忽略的 `config/config.local.toml`，等待用户填写。
+- [x] S0.3 在创建真实配置之前，将 `config/config.local.toml`、`.env`、`.venv/`、`.ajagent/`、Python 缓存加入 `.gitignore`；明确忽略文件不会清除已经提交的秘密。
 - [x] S0.4 约定配置优先级：CLI 的非秘密参数 > 环境变量 > 本地配置 > 默认值；不提供 CLI 明文 key 参数。
 - [x] S0.5 非秘密配置包括 provider、model、api_mode、workspace、max_steps、timeout；密钥只存在本地配置或环境变量中。
 - [x] S0.6 两个厂商的 endpoint 与密钥分别绑定。日志只打印 provider/model，不打印完整配置、认证头或 key。
@@ -93,15 +93,16 @@ ajAgent/
 ├── uv.lock
 ├── .python-version
 ├── .gitignore
-├── config.example.toml
-├── config.local.toml          # Local only; never commit.
+├── config/                   # Entry + runtime/models/tools/rag/harness/mcp fragments.
+│   ├── config.example.toml
+│   └── config.local.toml     # Local only; never commit.
 └── docs/
     ├── TODO.md
     ├── architecture.md
     └── learning-log.md
 ```
 
-**验收：** `uv sync --locked` 成功，环境依赖可导入，TOML 可解析，`git check-ignore config.local.toml` 命中；示例配置不含真实 key。本阶段只建立环境、模板与配置约定；配置优先级和日志规则将在 Stage 1/2 的运行代码中实现，Stage 0 未调用模型 API；Stage 1 已完成真实调用验证。
+**验收：** `uv sync --locked` 成功，环境依赖可导入，TOML 可解析，`git check-ignore config/models.local.toml` 命中；示例配置不含真实 key。本阶段只建立环境、模板与配置约定；配置优先级和日志规则将在 Stage 1/2 的运行代码中实现，Stage 0 未调用模型 API；Stage 1 已完成真实调用验证。
 
 ## 4. Stage 1 — Build a Minimal Agent Loop
 
@@ -162,11 +163,12 @@ src/ajagent/
 │   ├── base.py
 │   ├── deepseek.py
 │   └── openai.py
-└── tools/              # 工具定义与执行：registry负责注册所有tools
-    ├── base.py
-    ├── registry.py
-    ├── files.py
-    └── database.py
+└── tools/              # 按功能分组，共享协议与分发放在 common
+    ├── common/
+    │   ├── base.py
+    │   └── registry.py
+    ├── files/workspace.py
+    └── database/sqlite.py
 tests/
 ├── test_stage2.py           # Adapter, loop, config, and tool checks.
 └── fixtures/                 # Synthetic API responses and a tiny workspace.
@@ -178,7 +180,7 @@ tests/
 
 **目标：** RAG 为普通可选工具，模型自主决定是否调用。按 Local → Semantic → Web 分层实现与验证，再接入统一融合/rerank。
 
-- [x] S3.1 `--rag` / TOML 开关；默认关闭，基础工具保持可用，不要求每次回答检索。
+- [x] S3.1 `[tools].enabled` 中的 retrieval 开关；默认关闭，基础工具保持可用，不要求每次回答检索。
 - [x] S3.2 Local：rg 字面量/正则、Tree-sitter Python/JS/TS/TSX 符号搜索、文件过滤与行号。
 - [x] S3.3 Semantic：章节/AST 分块，PDF 一次提取，独立正文缓存。
 - [x] S3.4 本地 Qwen3-Embedding-0.6B，固定模型版本、query instruction、归一化。
@@ -271,7 +273,7 @@ src/ajagent/harness/
 ├── events.py
 ├── budget.py
 └── trace.py
-src/ajagent/tools/execution.py
+src/ajagent/tools/execution/runtime.py
 tests/test_harness.py
 tests/test_resume.py
 evals/cases/harness.jsonl
@@ -287,33 +289,52 @@ evals/cases/harness.jsonl
 
 **目标：** 扩展能力但保持同一工具入口，理解按需上下文和隔离子任务。
 
-- [ ] S6.1 Web：实现 `fetch_url`（超时、正文提取、来源 URL），与真正的 `web_search` 分开。搜索已在 Stage 3 使用 Tavily；本阶段补充全文抓取，使用离线 fixture 验证。
-- [ ] S6.2 Browser：用 Playwright 操作本地演示网页，暴露 navigate/read/click，至少完成一次点击后读取动态内容；浏览器可选安装，未安装时工具不注册。
-- [ ] S6.3 Code：扩展受控 Python 脚本执行，返回 stdout/stderr/exit_code；不在主进程里 eval。结合 Stage 5 权限和超时，后续需要强隔离时再加容器。
-- [ ] S6.4 工具结果统一来源结构，使文件、数据库、网页、浏览器输出都能进入 evidence map；抓取失败不拿搜索摘要当原文。
-- [ ] S6.5 Skill：读取 `skills/*/SKILL.md` 的 name/description，首版手动 `/skill name` 加载正文，后续才支持模型选择；正文只是指导，不越过工具权限。
-- [ ] S6.6 子任务：添加 `delegate(task, role)`，子 agent 复用 Runner，独立 messages、工具白名单和预算，返回 summary、evidence、artifacts、status。
-- [ ] S6.7 父级只收到任务产物和摘要，不拼接全部子 agent 历史；深度限制为一层，子任务消耗计入父级总预算。
-- [ ] S6.8 可选 MCP：接一个本地 stdio 示例服务，完成 list_tools/call_tool → 内部 ToolSpec/ToolResult 映射；可使用协议客户端 SDK，但不用其 agent 编排。
+- [x] S6.1 Web：实现 `fetch_url`（超时、正文提取、来源 URL），与真正的 `web_search` 分开。搜索已在 Stage 3 使用 Tavily；本阶段补充全文抓取，使用离线 fixture 验证。
+- [x] S6.2 Browser：用 Playwright 操作本地演示网页，暴露 navigate/read/click，至少完成一次点击后读取动态内容；浏览器可选安装，未安装时工具不注册。
+- [x] S6.3 Code：扩展受控 Python 脚本执行，返回 stdout/stderr/exit_code；不在主进程里 eval。结合 Stage 5 权限和超时，后续需要强隔离时再加容器。
+- [x] S6.4 工具结果统一来源结构，使文件、数据库、网页、浏览器输出都能进入 evidence map；抓取失败不拿搜索摘要当原文。
+- [x] S6.5 Skill：读取 `skills/*/SKILL.md` 的 name/description，用户 `/skill name` 或模型 `load_skill` 按需加载正文；正文只是指导，不越过工具权限。
+- [x] S6.6 子任务：添加 `delegate(contract, role)`，子 agent 复用 Runner，独立 messages、工具白名单和预算，返回 summary、evidence、artifacts、status。
+- [x] S6.7 父级只收到任务产物和摘要，不拼接全部子 agent 历史；深度限制为一层，子任务消耗计入父级总预算；支持同一步并行委派和在途预算预留。子任务只输出草稿/补丁提案，主 agent 检查基线、语法并审阅逻辑后串行应用。
+- [x] S6.8 MCP：持久 MCPManager/client 支持多 server、local stdio 和 remote Streamable HTTP；独立 server 配置，list_tools/call_tool 映射，使用协议 SDK 而不使用 agent 编排。
 
 **文件安排：**
 
 ```text
 src/ajagent/tools/
-├── web.py
-├── browser.py
-└── delegation.py
-src/ajagent/extensions/
-├── skills.py
-└── mcp.py                    # Optional.
+├── common/                # 协议、分发与来源记录
+│   ├── base.py
+│   ├── registry.py
+│   └── evidence.py
+├── files/workspace.py
+├── database/sqlite.py
+├── retrieval/search.py
+├── execution/runtime.py   # 写入与受控进程执行
+├── web/
+│   ├── fetch.py
+│   └── browser.py
+└── delegation/
+    ├── agent.py
+    ├── contracts.py
+    └── proposals.py
+src/ajagent/tools/
+├── skills/loader.py
+├── mcp/
+│   ├── config.py
+│   ├── client.py
+│   ├── manager.py
+│   └── demo.py
+└── runtime/
+    ├── config.py
+    └── loader.py             # 唯一注册与生命周期入口
 skills/research/SKILL.md
 examples/browser_fixture/index.html
 examples/scripts/analyze_data.py
-tests/test_extensions.py
+tests/test_capabilities.py
 tests/test_delegation.py
 ```
 
-**验收：** 搜索后抓取原文并引用；浏览器完成一次本地交互；脚本能超时终止；skill 正文按需加载；子任务失败不会吞掉父任务，不能无限递归。MCP 可单独延期，不阻塞主线。
+**验收：** 搜索后抓取原文并引用；浏览器完成一次本地交互；脚本能超时终止；skill 正文按需加载；子任务失败不会吞掉父任务，不能无限递归。本地 MCP 示例已完成。实现范围、使用命令与实测结果见 [Stage 6 验证](experiments/tools-validation.md)。
 
 ## 10. Stage 7 — Multi-Agent Is Coordination
 
@@ -327,7 +348,7 @@ tests/test_delegation.py
 - [ ] S7.6 产物使用独立目录和版本号；只有 coordinator 决定最终输出，不让多个角色同时覆盖同一个文件。
 - [ ] S7.7 工具权限按角色裁剪：researcher 读/检索，writer/reviser 写自己的产物，reviewer 读/检查；各自上下文隔离。
 - [ ] S7.8 某节点失败记录 failure，最多一次明确重试或返回 partial；不能把空输出当合格 handoff。
-- [ ] S7.9 串行稳定后选做两个 researcher 并发，再汇总冲突与重复证据；先设并发数 2，不做 agent swarm。
+- [ ] S7.9 将现有并行 delegate/task contract/single-writer 接入 coordinator，汇总研究冲突与重复证据；基础并行 worker 已完成，协调层验收尚未完成。
 - [ ] S7.10 用相同资料和 10 个任务比较单 agent 与多 agent；各跑 3 次，记录引用支持、任务完成率、延迟、token 和失败原因。控制总预算，允许结论是“多 agent 没有更好”。
 
 **文件安排：**

@@ -32,6 +32,12 @@ local-models = [
     "torch>=2.6,<3",
     "transformers>=4.51,<5",
 ]
+browser = [
+    "playwright>=1.50,<2",
+]
+mcp = [
+    "mcp>=1.30,<2",
+]
 
 [dependency-groups]
 dev = [

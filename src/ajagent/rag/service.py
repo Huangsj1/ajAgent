@@ -2,7 +2,7 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from ajagent.options import DEFAULTS, DEFAULT_CANDIDATES, Options, read_config
+from ajagent.options import DEFAULT_CONFIG_PATH, DEFAULTS, DEFAULT_CANDIDATES, Options, read_config
 import os
 from ajagent.options import TavilySettings
 from ajagent.rag.types import SearchResult, identifier
@@ -11,7 +11,6 @@ from ajagent.rag.device import validate_device
 
 @dataclass
 class RagSettings:
-    enabled: bool = False
     sources: list[str] = field(default_factory=lambda: ['local', 'semantic'])
     knowledge: str = 'knowledge'
     local_path: str = ''
@@ -29,7 +28,7 @@ class RagSettings:
                 for name in ['knowledge', 'index', 'cache', 'local_path']}
 
     @classmethod
-    def load(cls, path, enabled=None, sources=None, rerank=None, config=None):
+    def load(cls, path, sources=None, rerank=None, config=None):
         path = Path(path)
         config = read_config(path) if config is None else config
         tavily = dict(config.get('tavily', {}))
@@ -38,13 +37,13 @@ class RagSettings:
         options = Options.from_config(config)
         values = dict(config.get('rag', {}))
         settings = cls(**values, tavily=TavilySettings(**tavily), options=options)
-        for name, value in [('enabled', enabled), ('sources', sources), ('rerank', rerank)]:
+        for name, value in [('sources', sources), ('rerank', rerank)]:
             if value is not None:
                 setattr(settings, name, value)
         if not isinstance(settings.sources, list) or not settings.sources or set(settings.sources) - {'local', 'semantic', 'web'}:
             raise ValueError('RAG sources must be a nonempty list of local, semantic, web')
-        if any(type(getattr(settings, name)) is not bool for name in ('enabled', 'rerank')):
-            raise ValueError('enabled and rerank must be booleans')
+        if any(type(getattr(settings, name)) is not bool for name in ('rerank',)):
+            raise ValueError('rerank must be boolean')
         if type(settings.candidates) is not int or not 1 <= settings.candidates <= options.retrieval.rerank_candidates:
             raise ValueError(f'candidates must be 1..{options.retrieval.rerank_candidates}')
         validate_device(settings.device)
@@ -115,7 +114,7 @@ class RetrievalService:
         return result
 
 
-def build_service(root, settings, config_path='config.local.toml'):
+def build_service(root, settings, config_path=DEFAULT_CONFIG_PATH):
     # Construction never downloads models; each adapter loads on first use.
     from ajagent.rag.local.search import LocalSearch
     from ajagent.rag.semantic.encoder import QwenEncoder

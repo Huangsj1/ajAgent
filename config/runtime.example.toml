@@ -1,0 +1,28 @@
+[runtime]
+context_tokens = 32000
+output_tokens = 4096
+memory = true
+provider = "deepseek"
+workspace = "."
+max_steps = 8
+timeout = 30.0
+tool_timeout = 5.0
+max_output_chars = 6000
+
+[limits.context]
+tool_excerpt_chars = 1000
+recent_groups = 2
+summary_overhead_tokens = 256
+estimated_bytes_per_token = 3
+repeated_batches = 3
+
+[limits.memory]
+max_entries = 20
+text_chars = 1000
+source_chars = 300
+session_buffer_bytes = 65536
+
+[limits.retry]
+attempts = 3
+backoff_seconds = 0.5
+

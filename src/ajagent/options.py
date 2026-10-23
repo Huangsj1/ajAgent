@@ -41,6 +41,29 @@ class ToolOptions:
 
 
 @dataclass(frozen=True)
+class CapabilityOptions:
+    fetch_timeout: float = 15
+    fetch_bytes: int = 2000000
+    text_chars: int = 12000
+    url_chars: int = 2000
+    browser_timeout: float = 10
+    skill_bytes: int = 32000
+    skill_metadata_chars: int = 1000
+    child_steps: int = 5
+    child_tool_calls: int = 10
+    child_tokens: int = 30000
+    child_seconds: float = 120
+    task_chars: int = 8000
+    summary_chars: int = 4000
+    mcp_timeout: float = 10
+    read_workers: int = 4
+    subagent_workers: int = 3
+    max_proposals: int = 10
+    researcher_tools: tuple = ('read_file', 'list_files', 'search_files', 'query_sqlite', 'retrieve', 'fetch_url')
+    reviewer_tools: tuple = ('read_file', 'list_files', 'search_files', 'query_sqlite')
+
+
+@dataclass(frozen=True)
 class ContextOptions:
     tool_excerpt_chars: int = 1000
     recent_groups: int = 2
@@ -137,6 +160,7 @@ class Options:
     retry: RetryOptions = field(default_factory=RetryOptions)
     harness: HarnessOptions = field(default_factory=HarnessOptions)
     retrieval: RetrievalOptions = field(default_factory=RetrievalOptions)
+    capabilities: CapabilityOptions = field(default_factory=CapabilityOptions)
 
     @classmethod
     def from_config(cls, config):
@@ -188,8 +212,31 @@ MIN_TOOL_OUTPUT_CHARS = 1000
 DEFAULT_CANDIDATES = 10
 RUNTIME = RuntimeDefaults()
 DEFAULTS = Options()
+DEFAULT_CONFIG_PATH = 'config/config.local.toml'
 
 
 def read_config(path):
+    """Load an entry file and its fragments; entry values override fragments."""
+    def merge(target, source):
+        for key, value in source.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                merge(target[key], value)
+            else:
+                target[key] = value
+
+    def load(file, parents):
+        file = file.resolve()
+        if file in parents:
+            raise ValueError(f'Circular configuration include: {file.name}')
+        data = tomllib.loads(file.read_text(encoding='utf-8'))
+        includes = data.pop('include', [])
+        if not isinstance(includes, list) or any(not isinstance(item, str) or not item for item in includes):
+            raise ValueError('Configuration include must be a list of file paths')
+        merged = {}
+        for item in includes:
+            merge(merged, load(file.parent / item, parents | {file}))
+        merge(merged, data)
+        return merged
+
     path = Path(path)
-    return tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    return load(path, set()) if path.exists() else {}

@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 from datetime import datetime, timezone
 from uuid import uuid4
+from threading import Lock
 
 
 def redactor(secrets=()):
@@ -24,6 +25,7 @@ def redactor(secrets=()):
 
 class Events:
     def __init__(self, root, clean):
+        self.lock = Lock()
         self.id = uuid4().hex
         self.root = Path(root) / 'runs' / self.id
         self.root.mkdir(parents=True)
@@ -32,7 +34,7 @@ class Events:
     def emit(self, event, step=0, call_id=None, **details):
         row = self.clean(dict(event=event, run_id=self.id, step=step, call_id=call_id,
                               time=datetime.now(timezone.utc).isoformat(), **details))
-        with (self.root / 'events.jsonl').open('a', encoding='utf-8') as stream:
+        with self.lock, (self.root / 'events.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(row, ensure_ascii=False) + '\n')
 
     def checkpoint(self, **data):

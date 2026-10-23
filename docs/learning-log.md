@@ -10,14 +10,15 @@
 | Stage 4 | context builder、JSONL 会话、显式记忆 CLI、AJAGENT.md | 输入与历史分离、完整协议批次、可恢复摘要 |
 | Stage 3 | 可选 Local/Semantic/Tavily 检索、Qwen embedding/rerank | 分层召回、增量 HNSW、证据与排序 |
 | Stage 5 | Runner、权限、hooks、预算、事件与恢复 | 模型请求与实际执行分离、验证反馈、未知副作用 |
+| Stage 6 | fetch/browser/Python、skills、单层委派、stdio MCP | 来源类型、按需指导、上下文隔离与父子预算 |
 
 RAG 默认关闭；开启后由 agent 决定是否调用。设备 `auto` 优先 CUDA/MPS，最后 CPU；CUDA 使用 FP16。当前执行环境只能实测 CPU，3080 Ti 的性能仍需在对应机器验证。
 
-当前测试共 167 项，覆盖保留的 Stage 1/2 与分层 RAG。删除了旧 RAG 实现及其 21 项测试、旧索引和过期评测数据；当前原文已迁到 knowledge/，索引已在 knowledge/.index/ 重建；模型缓存保留。验证详情见 [RAG 验证](experiments/rag-validation.md)。
+当前测试共 203 项，覆盖保留的 Stage 1/2 与分层 RAG。删除了旧 RAG 实现及其 21 项测试、旧索引和过期评测数据；当前原文已迁到 knowledge/，索引已在 knowledge/.index/ 重建；模型缓存保留。验证详情见 [RAG 验证](experiments/rag-validation.md)。
 
-Stage 4 已完成短期上下文、会话恢复和显式长期记忆；Stage 5 的 harness 已完成，下一步是 Stage 6 的外部工具与委派。RAG 后续可继续研究大语料 recall/延迟、索引压缩与清理、可选引用校验。当前不把检索分数当作事实概率，也不声称引用位置就能证明语义支持。
+Stage 4 已完成短期上下文、会话恢复和显式长期记忆；Stage 5 的 harness 和 Stage 6 的外部工具与委派已完成，下一步是 Stage 7 的多 agent 协调。RAG 后续可继续研究大语料 recall/延迟、索引压缩与清理、可选引用校验。当前不把检索分数当作事实概率，也不声称引用位置就能证明语义支持。
 
-知识库可独立于项目 workspace：`update_knowledge(source, output)` 构建/更新，`open_knowledge(output)` 从索引读取源目录；agent 用 --rag-index 指定索引。Local Search 用 --rag-local-path 单独指定外部目录或文件。tools 分为 files/database/retrieval 三个目录。CLI 路径相对当前目录，TOML 路径相对配置文件所在目录。
+知识库可独立于项目 workspace：`update_knowledge(source, output)` 构建/更新，`open_knowledge(output)` 从索引读取源目录；agent 用 [rag].index 指定索引。Local Search 用 [rag].local_path 单独指定外部目录或文件。tools 按 common/runtime/files/database/retrieval/execution/web/delegation/skills/mcp 功能分组；不再保留 extensions 分类。CLI 路径相对当前目录，TOML 路径相对配置文件所在目录。
 
 Web Search 采用 Tavily Python SDK，认证与参数集中在 `[tavily]`。移除旧搜索依赖和重试/冷却逻辑，保留单次请求、结果归一化与直接错误返回。107 项测试通过，使用本地 key 的 SDK 真实搜索成功返回 3 条结果，无 warnings。
 
@@ -30,3 +31,13 @@ Session total usage 改为跨 resume 累计，最近 end 是累计快照；新�
 Stage 5 新增 18 项测试，DeepSeek/GPT 均完成真实读来源、写引用文档任务。详细结果见 [Harness 验证](experiments/harness-validation.md)。
 
 2026-10-22：整理可调默认值与配置传递，合并参数校验、超时控制和结束记录，移除重复状态输出及过时调试注释。新增 21 项配置生效/兼容性回归测试；现有知识库索引只读打开验证通过。详见 [配置说明](configuration.md)。
+
+Stage 6 新增 25 项测试；Chromium 本地动态点击、官方 MCP SDK 的真实 stdio 服务、DeepSeek/GPT 真实子任务均通过。父级 total usage 含子任务，last_usage 保持父级最后请求语义。配置同步更新 example/local TOML，补齐缺失 README 以修复 uv 的 editable build。详见 [Stage 6 验证](experiments/tools-validation.md)。
+
+工具体系重构：以 `[tools]` 和 ToolManager 统一开关、装配与生命周期；移除 extensions 分类。MCP 使用持久多 server session，支持 stdio/Streamable HTTP 与独立配置；skills 支持模型按需加载。Runner 并行调度独立 read，串行处理 write/execute；同一步多个 delegate 通过 contract 隔离任务，子任务仅输出提案，主 agent 审阅并顺序应用。真实 DeepSeek/GPT 同步返回两个 delegate，日志确认任务重叠和父子 token 求和正确。203 项回归通过，详见 [工具系统验证](experiments/tools-validation.md)。
+
+### 配置拆分与 MCP 测试服务整理
+
+配置迁入 `config/`，入口 include 组合 runtime、models、tools、rag、harness 分片；MCP 清单独立按需加载。保留本地凭据与用户参数，调整相对路径，统一 CLI/RAG/最小示例的默认入口。支持原有单文件配置，并增加分片合并、错误 include 与模板初始化回归。
+
+测试服务器移至根目录 `mcp/`：add 为 stdio，state 支持 stdio / Streamable HTTP；测试与手动调试共用服务器脚本。完整回归 206 passed（包含浏览器）；实际本地 MCP 配置调用 add(2, 3) 返回 5。没有调用收费模型或打印凭据。

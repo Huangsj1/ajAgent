@@ -1,4 +1,5 @@
 """CLI wiring; no agent orchestration lives here."""
+from contextlib import ExitStack
 import argparse
 import json
 import os
@@ -6,20 +7,20 @@ import sys
 from pathlib import Path
 import httpx
 from ajagent.config import load_config
-from ajagent.options import read_config
+from ajagent.options import DEFAULT_CONFIG_PATH, read_config
 from ajagent.core.loop import run_agent, SYSTEM
 from ajagent.models.deepseek import DeepSeekModel
 from ajagent.models.openai import OpenAIModel
-from ajagent.tools.registry import build_registry
-from ajagent.rag.service import RagSettings, build_service
 from ajagent.context.builder import ContextBuilder
 from ajagent.memory.session import Session
 from ajagent.memory.long_term import Memory
 from ajagent.harness.runner import Runner
 from ajagent.harness.budget import Budget
 from ajagent.harness.hooks import Hooks
-from ajagent.tools.execution import Execution
+from ajagent.tools.execution.runtime import Execution
 from ajagent.tools.files.workspace import Workspace
+from ajagent.tools.runtime.loader import ToolManager
+from ajagent.tools.common.base import ToolError
 
 
 def trace(step, call, result):
@@ -48,17 +49,12 @@ def supplement(step):
 def build_parser():
     parser = argparse.ArgumentParser(description="A small agent with a permission-aware execution harness")
     parser.add_argument("prompt")
-    parser.add_argument("--config", default="config.local.toml")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--provider", choices=["deepseek", "openai"])
     parser.add_argument("--model")
     parser.add_argument("--workspace")
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--timeout", type=float)
-    parser.add_argument("--rag", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--rag-sources", help="Comma-separated local,semantic,web")
-    parser.add_argument("--rag-rerank", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--rag-index", help="Existing knowledge index directory")
-    parser.add_argument("--rag-local-path", help="Local search directory or single file (may be outside workspace)")
     parser.add_argument('--resume', help='Resume a session ID with the same provider/model')
     parser.add_argument('--memory', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--context-tokens', type=int)
@@ -79,21 +75,8 @@ def main():
         config = read_config(args.config)
         settings = load_config(args, config=config)
         options = settings.options
-        registry = build_registry(settings)
-        rag = RagSettings.load(args.config, enabled=args.rag,
-                               sources=args.rag_sources.split(',') if args.rag_sources else None,
-                               rerank=args.rag_rerank, config=config)
-        if args.rag_index:
-            rag.index = str(Path(args.rag_index).expanduser().resolve())
-        if args.rag_local_path:
-            rag.local_path = str(Path(args.rag_local_path).expanduser().absolute())
+        registry = {}
         system_prompt = SYSTEM
-        if rag.enabled:
-            from ajagent.tools.retrieval.search import retrieval_tool
-            tool = retrieval_tool(build_service(settings.workspace, rag, settings.config_path),
-                                  settings.max_output_chars)
-            registry[tool.name] = tool
-            system_prompt += "\nRetrieval is optional. Use it only when helpful. Cite returned URI and lines when using evidence."
         instructions = settings.workspace / 'AJAGENT.md'
         if instructions.is_file():
             system_prompt += '\nProject instructions:\n' + instructions.read_text(encoding='utf-8')
@@ -108,7 +91,6 @@ def main():
         print(f"Provider: {settings.provider} | Model: {settings.model}")
 
         execution = Execution(Workspace(settings.workspace, settings.config_path, settings.tool_timeout, options.tools))
-        registry.update({tool.name: tool for tool in execution.specs()})
         harness = options.harness
         validation = json.loads(args.validate_command) if args.validate_command else list(harness.validation_command)
         validation = validation or None
@@ -119,7 +101,8 @@ def main():
         secrets = [getattr(settings, 'api_key', '')]
         secrets += [os.getenv(name, '') for name in ('OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'TAVILY_API_KEY')]
         secrets += [section.get('api_key', '') for section in config.values() if isinstance(section, dict)]
-        with httpx.Client() as client:
+        with ExitStack() as stack:
+            client = stack.enter_context(httpx.Client())
             runner = Runner(adapter(settings, client), registry, session, builder, execution,
                             ask=approve if sys.stdin.isatty() else None,
                             budget=Budget(args.max_tool_calls if args.max_tool_calls is not None else harness.max_tool_calls,
@@ -128,16 +111,25 @@ def main():
                             hooks=Hooks(execution.workspace, validation, harness), secrets=secrets,
                             denied=args.deny_tool, supplement=supplement if args.interactive else None,
                             loop=run_agent, options=options)
+            tool_manager = stack.enter_context(ToolManager(settings, config, runner, client))
+            system_prompt += tool_manager.instructions
+            prompt = tool_manager.prompt(args.prompt)   # expand skills
+            print('Tools: ' + ', '.join(runner.registry))
+            for warning in tool_manager.warnings:
+                print('Tool warning: ' + warning)
             session.append({'event': 'system', 'content': system_prompt})
             print(f'Run: {runner.events.id}')
             print('[Running Agent]...')
-            result = runner.run(args.prompt, max_steps=settings.max_steps,
+            result = runner.run(prompt, max_steps=settings.max_steps,
                                 max_output_chars=settings.max_output_chars, on_tool=trace,
                                 system_prompt=system_prompt, acknowledge_unknown=args.acknowledge_unknown)
         print(f'Harness: {runner.state.status} | Reason: {runner.state.reason}')
         print(f'Context (estimated): {builder.stats}')
         print(f"[Finished] Status: {result.status}\n{result.answer}\nTotal usage (session): {result.usage}\nLast model request usage: {result.last_usage}")
         return 0 if result.status == "completed" else 1
+    except ToolError as error:
+        print(f'Status: extension_error\n{error.code}: {error.message}')
+        return 1
     except (ValueError, TypeError, OSError, AttributeError):
         print("Status: config_error\nCheck provider, model, credentials, workspace and numeric settings.")
         return 1

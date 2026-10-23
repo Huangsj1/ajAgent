@@ -9,9 +9,9 @@ from ajagent.harness.hooks import Hooks
 from ajagent.harness.runner import Runner
 from ajagent.harness.trace import FakeModel
 from ajagent.memory.session import Session
-from ajagent.tools.execution import Execution, command
+from ajagent.tools.execution.runtime import Execution, command
 from ajagent.tools.files.workspace import Workspace
-from ajagent.tools.base import ToolError, ToolSpec, schema
+from ajagent.tools.common.base import ToolError, ToolSpec, schema
 
 
 def call(name, args, id='c'):
@@ -32,7 +32,9 @@ def runner(tmp_path, turns, **kwargs):
     execution = Execution(ws)
     tools = {t.name: t for t in [*ws.specs(), *execution.specs()]}
     session = kwargs.pop('session', None) or Session(tmp_path / '.ajagent', 'deepseek', 'fake')
-    return Runner(FakeModel(turns), tools, session, ContextBuilder(), execution, **kwargs)
+    run = Runner(FakeModel(turns), tools, session, ContextBuilder(), execution, **kwargs)
+    run.registry['read_artifact'] = run.artifact_tool()
+    return run
 
 
 def events(run):
@@ -161,7 +163,7 @@ def test_offline_cases_and_trace_replay(tmp_path, monkeypatch, capsys):
 def test_command_interrupt_reaps_process(tmp_path, monkeypatch):
     import subprocess
     import selectors
-    import ajagent.tools.execution as execution
+    import ajagent.tools.execution.runtime as execution
     original = subprocess.Popen
     processes = []
     def spawn(*args, **kwargs):

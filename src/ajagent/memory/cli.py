@@ -3,13 +3,13 @@ import argparse
 import json
 from pathlib import Path
 from ajagent.memory.long_term import Memory
-from ajagent.options import Options, read_config
+from ajagent.options import DEFAULT_CONFIG_PATH, Options, read_config
 
 
 def main():
     parser = argparse.ArgumentParser(description='Explicit workspace memory')
     parser.add_argument('--workspace', default='.')
-    parser.add_argument('--config', default='config.local.toml')
+    parser.add_argument('--config', default=DEFAULT_CONFIG_PATH)
     sub = parser.add_subparsers(dest='command', required=True)
     add = sub.add_parser('remember')
     add.add_argument('text')

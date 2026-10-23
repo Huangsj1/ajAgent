@@ -1,9 +1,10 @@
 """Bounded UTF-8 file tools with a single workspace boundary."""
+from hashlib import sha256
 import os
 from pathlib import Path
 import time
 from ajagent.options import DEFAULTS, RUNTIME
-from ajagent.tools.base import ToolError, ToolSpec, schema
+from ajagent.tools.common.base import ToolError, ToolSpec, schema
 
 
 class Workspace:
@@ -22,7 +23,7 @@ class Workspace:
         if not path.is_relative_to(self.root):
             raise ToolError("forbidden", "Path must remain inside the workspace")
         parts = path.relative_to(self.root).parts
-        if path == self.config_path or any(p.startswith(".") or p == "config.local.toml" for p in parts):
+        if path == self.config_path or any(p.startswith(".") or p.endswith(".local.toml") for p in parts):
             raise ToolError("forbidden", "Local configuration and hidden paths are excluded")
         if path.is_file() and path.stat().st_nlink > 1:
             raise ToolError("forbidden", "Hard-linked files are excluded")
@@ -53,9 +54,10 @@ class Workspace:
             raise ToolError("not_found", "File does not exist")
         if target.stat().st_size > self.options.max_file_bytes:
             raise ToolError("too_large", f"File exceeds {self.options.max_file_bytes} byte reading limit")
-        lines = target.read_text(encoding="utf-8").splitlines()
+        raw = target.read_bytes()
+        lines = raw.decode("utf-8").splitlines()
         selected = lines[start_line - 1:start_line - 1 + max_lines]
-        data = {"lines": [{"line": start_line + i, "text": line} for i, line in enumerate(selected)],
+        data = {"sha256": sha256(raw).hexdigest(), "lines": [{"line": start_line + i, "text": line} for i, line in enumerate(selected)],
                 "truncated": start_line - 1 + max_lines < len(lines)}
         return data, [{"path": path, "start_line": start_line}] if selected else []
 

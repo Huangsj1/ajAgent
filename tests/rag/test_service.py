@@ -55,9 +55,9 @@ def test_tool_whole_evidence_budget_and_no_mandatory_retrieval():
 
 def test_config_and_lazy_models(tmp_path):
     config = tmp_path / 'config.toml'
-    config.write_text('[rag]\nenabled=true\nsources=["web"]\nrerank=false\n')
-    settings = RagSettings.load(config, enabled=False, sources=['local'])
-    assert not settings.enabled and settings.sources == ['local']
+    config.write_text('[rag]\nsources=["web"]\nrerank=false\n')
+    settings = RagSettings.load(config, sources=['local'])
+    assert settings.sources == ['local']
     assert list(build_service(tmp_path, settings).backends) == ['local']
     code = '''import sys
 from ajagent.rag.service import RagSettings, build_service
@@ -77,13 +77,13 @@ def test_rerank_failure_is_explicit():
     assert len(result.hits) == 1 and 'fusion' in result.warnings[0]
 
 
-@pytest.mark.parametrize('flags,expected', [([], False), (['--rag'], True), (['--rag', '--no-rag'], False)])
-def test_agent_cli_registration(tmp_path, monkeypatch, flags, expected):
+@pytest.mark.parametrize('expected', [False, True])
+def test_agent_cli_registration(tmp_path, monkeypatch, expected):
     import argparse
     import ajagent.cli as cli
     from ajagent.core.types import RunResult
     config = tmp_path / 'config.toml'
-    config.write_text('[rag]\nrerank=false\nsources=["local"]\n')
+    config.write_text('[tools]\nenabled=' + str(['files', 'database'] + (['retrieval'] if expected else [])).replace("'", '"') + '\n[rag]\nrerank=false\nsources=["local"]\n')
     from ajagent.options import Options
     settings = argparse.Namespace(options=Options(), memory=True, context_tokens=32000, output_tokens=4096, workspace=tmp_path, config_path=config, provider='deepseek', model='test',
                                   max_steps=2, max_output_chars=6000)
@@ -96,12 +96,12 @@ def test_agent_cli_registration(tmp_path, monkeypatch, flags, expected):
     monkeypatch.setattr(cli, 'run_agent', run)
     # Use the ordinary registry with minimal settings for its constructors.
     settings.tool_timeout = 5
-    monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), *flags, 'hello'])
+    monkeypatch.setattr(sys, 'argv', ['ajagent', '--config', str(config), 'hello'])
     assert cli.main() == 0
 
 
 def test_failed_web_tool_is_error_but_partial_results_survive():
-    from ajagent.tools.registry import execute
+    from ajagent.tools.common.registry import execute
     from ajagent.core.types import ToolCall
     class FailedWeb:
         def search(self, *args, **kwargs):

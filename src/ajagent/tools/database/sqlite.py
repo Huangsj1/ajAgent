@@ -2,7 +2,7 @@
 import sqlite3
 import math
 import time
-from ajagent.tools.base import ToolError, ToolSpec, schema
+from ajagent.tools.common.base import ToolError, ToolSpec, schema
 
 
 def database_tool(workspace):

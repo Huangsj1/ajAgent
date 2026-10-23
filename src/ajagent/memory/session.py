@@ -9,6 +9,7 @@ from ajagent.options import DEFAULTS
 class Session:
     def __init__(self, root, provider, model, session_id=None, options=DEFAULTS.memory):
         self.options = options
+        self.provider, self.model = provider, model
         self.id = session_id or uuid4().hex
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', self.id):
             raise ValueError('Invalid session ID')

@@ -8,7 +8,7 @@ import pytest
 from ajagent.options import DEFAULTS, Options, read_config
 from ajagent.core.types import ToolCall, ToolResult, ModelTurn
 from ajagent.tools.files.workspace import Workspace
-from ajagent.tools.registry import execute, serialize
+from ajagent.tools.common.registry import execute, serialize
 
 
 @pytest.mark.parametrize('config', [
@@ -168,8 +168,8 @@ def test_cli_reads_config_once_and_injects_options(tmp_path, monkeypatch):
 
 
 def test_execution_and_harness_options_are_used(tmp_path):
-    from ajagent.tools.execution import Execution, command
-    from ajagent.tools.base import ToolError
+    from ajagent.tools.execution.runtime import Execution, command
+    from ajagent.tools.common.base import ToolError
     from test_harness import runner, final
     options = Options.from_config({'limits': {'tools': {'write_chars': 4, 'command_output_bytes': 12}},
                                    'harness': {'max_repairs': 0}})

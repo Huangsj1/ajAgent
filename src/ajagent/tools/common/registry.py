@@ -3,15 +3,9 @@ from dataclasses import asdict
 import json
 from jsonschema import Draft202012Validator
 from ajagent.core.types import ToolResult
-from ajagent.tools.base import ToolError
-from ajagent.options import DEFAULTS, MIN_TOOL_OUTPUT_CHARS
-from ajagent.tools.database.sqlite import database_tool
-from ajagent.tools.files.workspace import Workspace
-
-
-def build_registry(settings):
-    workspace = Workspace(settings.workspace, settings.config_path, settings.tool_timeout, getattr(settings, 'options', DEFAULTS).tools)
-    return {tool.name: tool for tool in [*workspace.specs(), database_tool(workspace)]}
+from ajagent.tools.common.evidence import source_record
+from ajagent.tools.common.base import ToolError
+from ajagent.options import MIN_TOOL_OUTPUT_CHARS
 
 
 def reject_constant(value):
@@ -40,7 +34,7 @@ def invoke(call_id, tool, args):
     """Execute validated arguments; handler failures remain structured results."""
     try:
         data, sources = tool.handler(**args)
-        return ToolResult(call_id, True, data, sources=sources)
+        return ToolResult(call_id, True, data, sources=[source_record(source) for source in sources])
     except ToolError as error:
         return failure(call_id, error.code, error.message)
     except ValueError:

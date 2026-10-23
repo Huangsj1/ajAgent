@@ -1,0 +1,20 @@
+# Copy to mcp.local.toml, then add "mcp" to [tools].enabled.
+[servers.demo]
+transport = "stdio"
+command = "${PYTHON}" # Current virtualenv interpreter.
+args = ["mcp/add_server.py"]
+cwd = ".."
+timeout = 10
+read_tools = ["add"] # Local trust override; other tools require approval.
+enabled = true
+
+[servers.remote]
+transport = "http" # Streamable HTTP, not legacy HTTP+SSE.
+url = "https://example.com/mcp"
+timeout = 30
+read_tools = []
+enabled = false
+# [servers.remote.headers]
+# Authorization = "Bearer ${REMOTE_MCP_TOKEN}"
+# [servers.demo.env]
+# EXAMPLE_TOKEN = "${EXAMPLE_TOKEN}"

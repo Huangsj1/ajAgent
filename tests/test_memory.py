@@ -67,7 +67,7 @@ def test_memory_bounds(tmp_path):
 @pytest.mark.parametrize('provider', ['deepseek', 'openai'])
 def test_tool_batch_resume_preserves_protocol_and_full_result(tmp_path, provider):
     from ajagent.core.types import ToolCall
-    from ajagent.tools.base import ToolSpec
+    from ajagent.tools.common.base import ToolSpec
     from ajagent.models.deepseek import DeepSeekModel
     from ajagent.models.openai import OpenAIModel
     call = ToolCall('call-1', 'large', '{}')

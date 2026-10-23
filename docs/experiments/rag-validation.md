@@ -40,7 +40,7 @@ uv run --extra local-models pytest -q
 
 默认原文迁移到根目录 knowledge/，通过真实 Qwen 模型构建 knowledge/.index/：12 篇新增、12 个新向量。随后仅传 `--index knowledge/.index` 更新：12 篇 unchanged、0 个新向量。读取 local TOML 并使用 Semantic + reranker 查询 Orion v2，命中 knowledge/05-release-v2.md 的 6 小时依据，返回绝对文件路径、无 warnings。
 
-构建和查询成功后删除了原 .ajagent 下的索引；examples 下只保留最小 agent 示例。example/local TOML 同步路径，API key 和厂商模型选择保持不变。文档中的命令采用当前 index/update/search 与 agent --rag-index/--rag-local-path 参数。
+构建和查询成功后删除了原 .ajagent 下的索引；examples 下只保留最小 agent 示例。example/local TOML 同步路径，API key 和厂商模型选择保持不变。文档中的命令采用当前 index/update/search 与 主配置的 [tools].enabled 与 [rag].index/local_path 参数。
 
 ## Tavily 接入验证
 

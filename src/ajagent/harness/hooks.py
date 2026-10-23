@@ -18,8 +18,8 @@ class Hooks:
         return [message for hook in self.before_tool if (message := hook(call, args))]
 
     def after(self, call, args, result):
-        if call.name == 'write_file' and result.ok:
-            self.changed.add(args['path'])
+        if result.ok and call.name in {'write_file', 'apply_proposal'}:
+            self.changed.add(args['path'] if call.name == 'write_file' else result.data['path'])
         for hook in self.after_tool:
             hook(call, args, result)
 

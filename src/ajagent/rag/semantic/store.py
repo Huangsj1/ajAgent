@@ -1,6 +1,6 @@
 """Immutable generations keep SQLite, vectors and HNSW in one published snapshot."""
 from pathlib import Path
-from ajagent.options import DEFAULTS
+from ajagent.options import DEFAULT_CONFIG_PATH, DEFAULTS
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -13,7 +13,7 @@ import hnswlib
 from ajagent.rag.types import Hit, SearchResult, identifier
 from ajagent.rag.semantic.chunks import SUPPORTED, parse, chunks
 from ajagent.tools.files.workspace import Workspace
-from ajagent.tools.base import ToolError
+from ajagent.tools.common.base import ToolError
 
 
 def digest(data):
@@ -21,7 +21,7 @@ def digest(data):
 
 
 class SemanticIndex:
-    def __init__(self, root, directory, encoder, config_path='config.local.toml', source_directory='.', options=DEFAULTS):
+    def __init__(self, root, directory, encoder, config_path=DEFAULT_CONFIG_PATH, source_directory='.', options=DEFAULTS):
         self.options = options.retrieval
         self.root, self.directory = Path(root).resolve(), Path(directory).resolve()
         self.encoder = encoder
@@ -29,7 +29,7 @@ class SemanticIndex:
         self.workspace = Workspace(self.root, config_path, timeout=self.options.index_timeout, options=options.tools)
 
     @classmethod
-    def open(cls, directory, encoder, config_path='config.local.toml', options=DEFAULTS):
+    def open(cls, directory, encoder, config_path=DEFAULT_CONFIG_PATH, options=DEFAULTS):
         """Open an existing index using its recorded source directory."""
         directory = Path(directory).expanduser().resolve()
         generation = directory / (directory / 'CURRENT').read_text().strip()

@@ -16,6 +16,7 @@ class ToolSpec:
     input_schema: dict
     handler: Callable
     effect: str = "read"
+    parallel: bool = True
 
     def definition(self):
         return {"name": self.name, "description": self.description, "parameters": self.input_schema}

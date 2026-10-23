@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 import sys
-import tomllib
+from ajagent.options import DEFAULT_CONFIG_PATH, read_config
 
 import httpx
 
@@ -52,7 +52,7 @@ def execute_tool(call):
 
 def load_config(args):
     path = Path(args.config)
-    config = tomllib.loads(path.read_text()) if path.exists() else {}
+    config = read_config(path)
     runtime, provider = config.get("runtime", {}), config.get("deepseek", {})
     if os.getenv("AJAGENT_PROVIDER", runtime.get("provider", "deepseek")) != "deepseek":
         raise ValueError("Stage 1 only supports DeepSeek")
@@ -114,7 +114,7 @@ def run_agent(prompt, settings, client):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt")
-    parser.add_argument("--config", default="config.local.toml")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--model")
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--timeout", type=float)

@@ -1,5 +1,5 @@
 # Local credentials and runtime data.
-config.local.toml
+*.local.toml
 .env
 .env.*
 !.env.example
@@ -19,3 +19,4 @@ dist/
 
 # Generated knowledge index (source documents remain tracked).
 knowledge/.index/
+

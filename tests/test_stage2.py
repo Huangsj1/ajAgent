@@ -13,8 +13,15 @@ from ajagent.core.types import ModelTurn, ToolCall
 from ajagent.models.base import ModelError
 from ajagent.models.deepseek import DeepSeekModel
 from ajagent.models.openai import OpenAIModel
-from ajagent.tools.base import ToolSpec, schema
-from ajagent.tools.registry import build_registry, execute, serialize
+from ajagent.tools.common.base import ToolSpec, schema
+from ajagent.tools.common.registry import execute, serialize
+from ajagent.tools.files.workspace import Workspace
+from ajagent.tools.database.sqlite import database_tool
+
+
+def basic_registry(settings):
+    workspace = Workspace(settings.workspace, settings.config_path, settings.tool_timeout, settings.options.tools)
+    return {tool.name: tool for tool in [*workspace.specs(), database_tool(workspace)]}
 
 
 @pytest.fixture
@@ -55,7 +62,7 @@ def test_both_protocols_batch_and_retry_do_not_repeat_tools(settings, adapter, m
 
     seen = []
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        result = run_agent("read", adapter(settings, client, sleeps.append), build_registry(settings),
+        result = run_agent("read", adapter(settings, client, sleeps.append), basic_registry(settings),
                            on_tool=lambda _, call, result: seen.append(call.call_id))
     assert result.status == "completed"
     assert result.usage == {"input_tokens": 20, "output_tokens": 4}
@@ -121,7 +128,7 @@ def test_unknown_output_is_not_silently_dropped(settings):
 
 
 def invoke(settings, name, args):
-    return execute(ToolCall("id", name, json.dumps(args)), build_registry(settings))
+    return execute(ToolCall("id", name, json.dumps(args)), basic_registry(settings))
 
 
 @pytest.mark.parametrize("path", ["../outside", "config.local.toml", ".env", ".ajagent/data", "custom.toml"])
@@ -152,7 +159,7 @@ def test_read_search_empty_and_limits(settings):
 
 @pytest.mark.parametrize("arguments", ['{', '[]', '{"path":1}', '{"path":"note.txt","max_lines":false}', '{"path":"note.txt","extra":1}'])
 def test_invalid_tool_arguments(settings, arguments):
-    result = execute(ToolCall("id", "read_file", arguments), build_registry(settings))
+    result = execute(ToolCall("id", "read_file", arguments), basic_registry(settings))
     assert not result.ok and result.error["code"] == "invalid_arguments"
 
 
@@ -186,10 +193,10 @@ class FakeModel:
 
 def test_no_progress_and_step_limit(settings):
     model = FakeModel()
-    assert run_agent("task", model, build_registry(settings)).status == "no_progress"
+    assert run_agent("task", model, basic_registry(settings)).status == "no_progress"
     assert model.count == 3
     changing = FakeModel(change=True)
-    assert run_agent("task", changing, build_registry(settings), max_steps=4).status == "step_limit"
+    assert run_agent("task", changing, basic_registry(settings), max_steps=4).status == "step_limit"
     assert changing.count == 4
 
 

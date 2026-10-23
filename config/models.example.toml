@@ -1,0 +1,14 @@
+[deepseek]
+api_key = ""
+base_url = "https://api.deepseek.com"
+api_mode = "chat_completions"
+# Set a model ID supported by your account before running Stage 1.
+model = ""
+
+[openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+api_mode = "responses"
+# Select a GPT model that supports Responses function calling.
+model = ""
+

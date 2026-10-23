@@ -1,0 +1,15 @@
+[harness]
+max_repairs = 2
+artifact_threshold_chars = 6000
+artifact_preview_chars = 1500
+artifact_read_chars = 2000
+artifact_max_offset = 10000000
+model_log_chars = 500
+tool_log_chars = 2000
+validation_feedback_chars = 2000
+max_tool_calls = 30
+max_tokens = 100000
+max_seconds = 300
+deny_tools = []
+validation_command = []
+

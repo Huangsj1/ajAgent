@@ -15,26 +15,22 @@ class ObservedModel:
         runner = self.runner
         reserve = getattr(getattr(self.model, 'settings', None), 'output_tokens', 0)
         # 1. Check the budget
-        runner.budget.check(estimate([context, [t.definition() for t in tools]],
-                                     getattr(runner.builder, 'options', DEFAULTS.context).estimated_bytes_per_token) + reserve)
+        estimate_tokens = estimate([context, [t.definition() for t in tools]],
+                                   getattr(runner.builder, 'options', DEFAULTS.context).estimated_bytes_per_token) + reserve
         started = time.monotonic()
-        # 2. Record the model start event
         runner.events.emit('model_started', runner.step, purpose='summary' if runner.building_context else 'agent')
-        old_budget = getattr(self.model, 'request_budget', None)
-        self.model.request_budget = runner.budget
-        try:
-            # 3. Generate the model turn
-            turn = self.model.generate(context, tools)
-        except BaseException as error:
-            runner.events.emit('model_finished', runner.step, error=type(error).__name__,
-                               elapsed=time.monotonic() - started)
-            raise
-        finally:
-            self.model.request_budget = old_budget
-        # 4. Record the model finish event and update the budget usage
-        for key in runner.used:
-            runner.used[key] += turn.usage.get(key, 0)
-        runner.budget.tokens = sum(runner.used.values())
+        with runner.budget.request(estimate_tokens) as settle:
+            old_budget = getattr(self.model, 'request_budget', None)
+            self.model.request_budget = runner.budget
+            try:
+                turn = self.model.generate(context, tools)
+                settle(lambda: runner.account_usage(turn.usage))
+            except BaseException as error:
+                runner.events.emit('model_finished', runner.step, error=type(error).__name__,
+                                   elapsed=time.monotonic() - started)
+                raise
+            finally:
+                self.model.request_budget = old_budget
         if not runner.building_context:
             runner.last_usage = dict(turn.usage) or None
         runner.events.emit('model_finished', runner.step, elapsed=time.monotonic() - started,

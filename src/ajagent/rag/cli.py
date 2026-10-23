@@ -1,4 +1,5 @@
 """Inspect retrieval without calling a chat model or requiring an API key."""
+from ajagent.options import DEFAULT_CONFIG_PATH
 import argparse
 from dataclasses import asdict
 import json
@@ -10,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['index', 'update', 'search'])
     parser.add_argument('query', nargs='?')
-    parser.add_argument('--config', default='config.local.toml')
+    parser.add_argument('--config', default=DEFAULT_CONFIG_PATH)
     parser.add_argument('--workspace', default='.')
     parser.add_argument('--sources', help='Comma-separated local,semantic,web')
     parser.add_argument('--knowledge', '--source', dest='knowledge', help='Knowledge source directory; may be outside workspace')

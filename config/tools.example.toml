@@ -1,0 +1,50 @@
+[limits.tools]
+max_file_bytes = 1000000
+max_scan_files = 1000
+max_list_files = 100
+max_matches = 50
+excerpt_chars = 500
+default_read_lines = 100
+max_read_lines = 200
+path_chars = 500
+write_chars = 100000
+diff_chars = 3000
+command_output_bytes = 12000
+command_chunk_bytes = 8192
+command_poll_seconds = 0.1
+command_max_args = 40
+command_arg_chars = 2000
+allowed_commands = ["python", "python3", "pytest", "rg"]
+sql_rows = 50
+sql_max_rows = 100
+sql_query_chars = 10000
+sql_value_bytes = 100000
+sql_progress_steps = 1000
+
+[limits.capabilities]
+fetch_timeout = 15
+fetch_bytes = 2000000
+text_chars = 12000
+url_chars = 2000
+browser_timeout = 10
+skill_bytes = 32000
+skill_metadata_chars = 1000
+child_steps = 5
+child_tool_calls = 10
+child_tokens = 30000
+child_seconds = 120
+task_chars = 8000
+summary_chars = 4000
+mcp_timeout = 10
+read_workers = 4
+subagent_workers = 3
+max_proposals = 10
+researcher_tools = ["read_file", "list_files", "search_files", "query_sqlite", "retrieve", "fetch_url"]
+reviewer_tools = ["read_file", "list_files", "search_files", "query_sqlite"]
+
+# The single switchboard for all tool groups.
+[tools]
+enabled = ["files", "database", "execution", "web", "skills", "delegation", "artifacts"]
+disabled = []
+skills_path = "../skills"
+mcp_config = "mcp.local.toml"

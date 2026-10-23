@@ -3,7 +3,7 @@ import json
 import shutil
 import subprocess
 import time
-from ajagent.options import DEFAULTS
+from ajagent.options import DEFAULT_CONFIG_PATH, DEFAULTS
 from pathlib import Path
 from ajagent.rag.local.syntax import definitions, LANGUAGES
 from ajagent.rag.types import Hit, SearchResult, identifier
@@ -11,7 +11,7 @@ from ajagent.tools.files.workspace import Workspace
 
 
 class LocalSearch:
-    def __init__(self, root, config_path="config.local.toml", timeout=None, max_files=None, options=DEFAULTS):
+    def __init__(self, root, config_path=DEFAULT_CONFIG_PATH, timeout=None, max_files=None, options=DEFAULTS):
         self.options = options.retrieval
         timeout = self.options.local_timeout if timeout is None else timeout
         target = Path(root).expanduser().absolute()

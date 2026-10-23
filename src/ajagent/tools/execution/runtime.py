@@ -5,20 +5,24 @@ import selectors
 import signal
 import subprocess
 import time
+import sys
 from ajagent.options import DEFAULTS, RUNTIME
-from ajagent.tools.base import ToolError, ToolSpec, schema
+from ajagent.tools.common.base import ToolError, ToolSpec, schema
 
 
-def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=DEFAULTS.tools):
+def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=DEFAULTS.tools, *, separate=False, python_script=False):
     output_limit = options.command_output_bytes if output_limit is None else output_limit
-    if not argv or argv[0] not in options.allowed_commands:
+    if not argv or (argv[0] not in options.allowed_commands and not (python_script and argv[0] == sys.executable)):
         raise ToolError('forbidden', 'Allowed executables: ' + ', '.join(options.allowed_commands))
     # No shell; descendants share a process group for cancellation and timeout.
-    process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate else subprocess.STDOUT,
                                start_new_session=True)
-    output, truncated = bytearray(), False
+    output = {'stdout': bytearray(), 'stderr': bytearray()}
+    truncated = False
     selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
+    selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
+    if separate:
+        selector.register(process.stderr, selectors.EVENT_READ, 'stderr')
     deadline = time.monotonic() + timeout
     try:
         while selector.get_map():
@@ -29,12 +33,13 @@ def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
-                room = max(0, output_limit - len(output))
-                output.extend(chunk[:room])
+                room = max(0, output_limit - sum(map(len, output.values())))
+                output[key.data].extend(chunk[:room])
                 truncated |= len(chunk) > room
         process.wait(timeout=max(.001, deadline - time.monotonic()))
-        return {'exit_code': process.returncode, 'output': output.decode('utf-8', errors='replace'),
-                'truncated': truncated}, []
+        decoded = {key: value.decode('utf-8', errors='replace') for key, value in output.items()}
+        streams = decoded if separate else {'output': decoded['stdout']}
+        return {'exit_code': process.returncode, **streams, 'truncated': truncated}, []
     except subprocess.TimeoutExpired:
         raise ToolError('timeout', 'Command timed out; process group terminated') from None
     finally:
@@ -46,6 +51,8 @@ def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=
         process.wait()
         selector.close()
         process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
 
 
 class Execution:
@@ -78,8 +85,20 @@ class Execution:
             raise ToolError('not_found', 'Working directory does not exist')
         return command(argv, cwd, self.timeout, options=self.options)
 
+    def run_python(self, path, args=None):
+        target = self.workspace.resolve(path)
+        if target.suffix != '.py' or not target.is_file():
+            raise ToolError('invalid_script', 'Choose an existing workspace .py file')
+        data, _ = command([sys.executable, '-B', str(target), *(args or [])], self.workspace.root,
+                          self.timeout, options=self.options, separate=True, python_script=True)
+        return data, [{'path': path, 'kind': 'script'}]
+
     def specs(self):
-        return [ToolSpec('write_file', 'Create or replace a UTF-8 workspace file after permission.', schema({
+        return [ToolSpec('run_python', 'Execute an approved workspace Python script in a subprocess (not a sandbox).', schema({
+            'path': {'type': 'string', 'maxLength': self.options.path_chars},
+            'args': {'type': 'array', 'maxItems': self.options.command_max_args,
+                     'items': {'type': 'string', 'maxLength': self.options.command_arg_chars}}}, ['path']), self.run_python, 'execute'),
+            ToolSpec('write_file', 'Create or replace a UTF-8 workspace file after permission.', schema({
             'path': {'type': 'string', 'minLength': 1, 'maxLength': self.options.path_chars},
             'content': {'type': 'string', 'maxLength': self.options.write_chars}}, ['path', 'content']), self.write_file, 'write'),
             ToolSpec('run_command', 'Run an approved argv list in the workspace (not a sandbox).', schema({
