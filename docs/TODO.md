@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料初次核对日期：2026-10-11；当前状态更新：2026-10-23。Stage 0–8 已实现，完整回归 266 项通过。默认主 agent 动态委派，Stage 7 固定 workflow 保留作对照；Stage 8 已完成真实代码项目、中断恢复、独立验收与失败改进。
+当前状态：Stage 0–8 已实现。默认由主 agent 动态委派；固定 research workflow 保留为可选模式。运行方式见根目录 README，实现与边界见 architecture。
 
 ## 1. 项目目标与约定
 
@@ -12,7 +12,7 @@
 
 - Python 3.11+，标准库优先；CLI 先用 `argparse`，数据结构先用 `dataclass`。
 - 允许 `openai` 等基础模型客户端，也可以用 `httpx`；模型客户端只负责请求。循环、工具、状态、检索、记忆和协调由自己实现。
-- 不以 OpenAI Agents SDK、Claude Agent SDK、LangChain、LangGraph 等作为主流程。以后可用同一评测集比较。
+- 不以 OpenAI Agents SDK、Claude Agent SDK、LangChain、LangGraph 等作为主流程。保持主流程可读。
 - 依赖按需增加：Stage 2 参数校验，Stage 3 NumPy/HNSW/Tree-sitter 与可选本地 Qwen，Stage 6 Playwright；不提前引入向量数据库、服务端、队列或容器集群。
 - 代码标识符、简短注释和 docstring 使用英文；学习文档可用中文。注释解释约束、原因或协议细节，不逐行翻译代码。
 - 生成模型只使用 DeepSeek 与 OpenAI GPT；embedding/reranker 使用本地 Qwen 模型。
@@ -31,10 +31,9 @@
 | 5 | 可观测、可中断、可恢复的 harness | 4–7 天 |
 | 6 | 外部工具、skills、子任务 | 3–5 天 |
 | 7 | research → write → review → revise | 3–5 天 |
-| 8（选修） | 长任务与反馈改进 | 按需 |
-| 9（选修） | 系统评测与性能优化 | 按需 |
+| 8 | 长任务与反馈改进 | 按需 |
 
-上述时间只是个人学习量估计。Stage 5 是单 agent 的完整里程碑；Stage 7 是本路线的核心终点。评测从 Stage 1 就开始，Stage 9 只是深化。
+上述时间只是个人学习量估计。Stage 5 完成单 agent harness，Stage 8 补齐持久任务与恢复。
 
 ## 2. Claude Code 参考依据与边界
 
@@ -82,7 +81,7 @@
 - [x] S0.5 非秘密配置包括 provider、model、api_mode、workspace、max_steps、timeout；密钥只存在本地配置或环境变量中。
 - [x] S0.6 两个厂商的 endpoint 与密钥分别绑定。日志只打印 provider/model，不打印完整配置、认证头或 key。
 - [x] S0.7 保持 README 包含安装、配置、运行示例、当前阶段；维护 architecture，文档开头必须有主要流程图。
-- [x] S0.8 建立学习日志；每阶段写下“学到了什么、失败在哪里、为什么这样拆分”。
+- [x] S0.8 在 architecture 中记录实现取舍；每阶段写下“学到了什么、失败在哪里、为什么这样拆分”。
 
 **文件安排（已建立）：**
 
@@ -98,8 +97,7 @@ ajAgent/
 │   └── config.local.toml     # Local only; never commit.
 └── docs/
     ├── TODO.md
-    ├── architecture.md
-    └── learning-log.md
+    └── architecture.md
 ```
 
 **验收：** `uv sync --locked` 成功，环境依赖可导入，TOML 可解析，`git check-ignore config/models.local.toml` 命中；示例配置不含真实 key。本阶段只建立环境、模板与配置约定；配置优先级和日志规则将在 Stage 1/2 的运行代码中实现，Stage 0 未调用模型 API；Stage 1 已完成真实调用验证。
@@ -207,7 +205,7 @@ tests/rag/
 knowledge/.index/            # Generated data; ignored.
 ```
 
-验收与限制见 [新版验证](experiments/rag-validation.md) 和 [RAG 说明](../src/ajagent/rag/README.md)。新版不强制最终引用校验；来源存在不等于支持结论。
+实现与限制见 [RAG 说明](../src/ajagent/rag/README.md)。来源存在不等于支持结论，引用仍需核对。
 
 ## 7. Stage 4 — Context, Session, and Memory
 
@@ -276,7 +274,6 @@ src/ajagent/harness/
 src/ajagent/tools/execution/runtime.py
 tests/test_harness.py
 tests/test_resume.py
-evals/cases/harness.jsonl
 .ajagent/runs/<run_id>/
 ├── events.jsonl
 ├── checkpoint.json
@@ -334,7 +331,7 @@ tests/test_capabilities.py
 tests/test_delegation.py
 ```
 
-**验收：** 搜索后抓取原文并引用；浏览器完成一次本地交互；脚本能超时终止；skill 正文按需加载；子任务失败不会吞掉父任务，不能无限递归。本地 MCP 示例已完成。实现范围、使用命令与实测结果见 [Stage 6 验证](experiments/tools-validation.md)。
+**验收：** 搜索后抓取原文并引用；浏览器完成一次本地交互；脚本能超时终止；skill 正文按需加载；子任务失败不会吞掉父任务，不能无限递归。本地 MCP 示例已完成。工具组织与权限见 [架构](architecture.md)。
 
 ## 10. Stage 7 — Multi-Agent Is Coordination
 
@@ -349,9 +346,9 @@ tests/test_delegation.py
 - [x] S7.7 工具权限按角色裁剪：researcher 读/检索，writer/reviser 返回自己的产物，由 coordinator 单一落盘，reviewer 读/检查；各自上下文隔离。
 - [x] S7.8 某节点失败记录 failure，最多一次明确重试或返回 partial；不能把空输出当合格 handoff。
 - [x] S7.9 将现有并行 delegate/task contract/single-writer 接入 coordinator，汇总研究冲突与重复证据；已验证协调层研究委派、共享预算和单一写入边界。
-- [x] S7.10 用相同资料和 10 个任务比较单 agent 与多 agent；各跑 3 次，记录引用支持、任务完成率、延迟、token 和失败原因。控制总预算，允许结论是“多 agent 没有更好”。
+- [x] S7.10 覆盖共享预算、证据契约、失败修订与单一发布者的回归测试。
 
-**实现记录：** 独立角色 Runner、有界契约重试和修订、实际证据 ID 校验、版本化单一发布。60 次真实对比中 single 综合通过 28/30、multi 26/30；多 agent 未展示优势，预算与输出失败均保留在 [报告](experiments/multi-agent-comparison.md)。
+**实现记录：** 独立角色 Runner、有界契约重试和修订、证据 ID 校验、版本化单一发布；默认使用主 agent 动态委派。
 
 **文件安排：**
 
@@ -368,8 +365,6 @@ agents/
 ├── reviewer.md
 └── reviser.md
 tests/test_coordinator.py
-evals/cases/multi_agent.jsonl
-docs/experiments/multi-agent-comparison.md
 .ajagent/runs/<run_id>/artifacts/
 ├── research.json
 ├── draft-v1.md
@@ -377,7 +372,7 @@ docs/experiments/multi-agent-comparison.md
 └── final.md
 ```
 
-**验收：** 至少演示一次 review 失败后成功修改；缺证据时不会空转；父级总预算可终止所有节点；最终文档每个引用可追溯。对比报告包含失败样本，不仅展示最好案例。
+**验收：** 至少演示一次 review 失败后成功修改；缺证据时不会空转；父级总预算可终止所有节点；最终文档每个引用可追溯。失败应返回明确状态并保留已有产物。
 
 ## 11. Stage 8 — Long-Running Tasks and Feedback（已实现）
 
@@ -401,30 +396,9 @@ tests/test_long_running.py
 └── checkpoints/
 ```
 
-**验收已完成：** 子进程与真实模型均完成三段任务在第二段中断后恢复；最终状态由实际检查和文件哈希决定。默认动态委派，不采用固定角色链。38 项示例项目测试与独立黑盒审计通过，完整失败记录和预算调整见 [Stage 8 验证](experiments/long-task-validation.md)。
+**验收已完成：** 中断恢复保留已验证进度，最终状态由实际检查与文件哈希决定；默认动态委派。实现见 [长任务说明](../src/ajagent/tasks/README.md)。
 
-## 12. Stage 9（选修）— Evaluation and Optimization
-
-- [ ] S9.1 汇总已有 cases，分类统计工具选择、检索、引用、恢复、权限拒绝和协作表现；把失败样本加入回归集。
-- [ ] S9.2 实验关闭/开启检索、记忆、压缩、多 agent，保持任务集与预算可比；报告多次运行的波动。
-- [ ] S9.3 测量耗时分布和 token，先定位瓶颈，再尝试 embedding 缓存、工具缓存或并行只读调用；明确缓存失效条件。
-- [ ] S9.4 加流式输出时只在完整工具参数收到后执行，取消时清理未完成请求；不要执行半段 JSON。
-- [ ] S9.5 可选与 Agent SDK 实现对照，放在 `comparisons/`，不替换本项目主流程。
-- [ ] S9.6 整理一个“失败 → 诊断 → 改动 → 评测结果”的技术报告，作为项目展示材料。
-
-```text
-evals/
-├── run.py
-├── metrics.py
-└── cases/
-docs/experiments/ablation.md
-comparisons/README.md
-.ajagent/eval-results/        # Local reports; sanitized summaries go in docs.
-```
-
-**验收：** 每项优化都能对应指标和代价；没有可测收益的复杂机制可以删除。
-
-## 13. 每个阶段的统一完成清单
+## 12. 每个阶段的统一完成清单
 
 - [ ] 本阶段核心 TODO 完成，选修项明确标注延期。
 - [ ] 有一个正常 demo 和一个失败/边界 demo，记录实际命令与结果。
@@ -433,12 +407,12 @@ comparisons/README.md
 - [ ] architecture 的流程图、模块表与实现一致，标记已实现阶段。
 - [ ] 英文注释简洁，函数职责可说明；新抽象有实际使用需求。
 - [ ] 配置、日志、测试 fixture 和索引没有真实 key；生成数据没有误入 Git。
-- [ ] 学习日志写下本阶段取舍，再开始下一阶段。可以在验收后手动打 `stage-01` 等标签保存学习快照。
+- [ ] architecture 记录本阶段取舍，再开始下一阶段。可以在验收后手动打 `stage-01` 等标签保存学习快照。
 
 目录采用**逐阶段累积**：Stage 2 起主程序始终在 `src/ajagent/` 演进；仅 Stage 1 保留独立教学脚本，不复制多套项目。上面的目录树是模块安排，不要求一个小函数就拆成一个文件；实际过小时可合并，但保持职责边界。
 
-## 14. 下一次开始实现时的任务说明
+## 13. 下一次开始实现时的任务说明
 
 建议从以下范围开始：
 
-> 下一步可选 Stage 9。以 Stage 8 的真实失败轨迹为基线，测量重复读取、测试定位和上下文交接成本；默认保留主 agent 动态委派，不把固定角色链作为主流程。先形成可比较指标再优化，不以放宽测试或无限提高预算代替改进。
+> Stage 0–8 已实现。后续围绕实际任务修复问题，保留关键行为的回归测试；默认动态委派，避免无必要地增加执行模式。

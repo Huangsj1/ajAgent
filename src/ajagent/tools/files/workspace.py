@@ -1,5 +1,5 @@
 """Bounded UTF-8 file tools with a single workspace boundary."""
-from hashlib import sha256
+from ajagent.tools.files.cache import FileCache
 import os
 from pathlib import Path
 import time
@@ -13,6 +13,7 @@ class Workspace:
         self.config_path = Path(config_path).resolve()
         self.timeout = timeout
         self.options = options
+        self.read_cache = FileCache(options.read_cache_bytes)
 
     def resolve(self, name):
         path = self.root / name
@@ -52,12 +53,9 @@ class Workspace:
         target = self.resolve(path)
         if not target.is_file():
             raise ToolError("not_found", "File does not exist")
-        if target.stat().st_size > self.options.max_file_bytes:
-            raise ToolError("too_large", f"File exceeds {self.options.max_file_bytes} byte reading limit")
-        raw = target.read_bytes()
-        lines = raw.decode("utf-8").splitlines()
+        digest, lines = self.read_cache.read(target, self.options.max_file_bytes)
         selected = lines[start_line - 1:start_line - 1 + max_lines]
-        data = {"sha256": sha256(raw).hexdigest(), "lines": [{"line": start_line + i, "text": line} for i, line in enumerate(selected)],
+        data = {"sha256": digest, "lines": [{"line": start_line + i, "text": line} for i, line in enumerate(selected)],
                 "truncated": start_line - 1 + max_lines < len(lines)}
         return data, [{"path": path, "start_line": start_line}] if selected else []
 

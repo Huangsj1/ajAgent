@@ -145,9 +145,12 @@ def test_cancelled_state_and_usage(tmp_path):
 
 def test_offline_cases_and_trace_replay(tmp_path, monkeypatch, capsys):
     import sys
-    from pathlib import Path
     from ajagent.harness.trace import main
-    cases = [json.loads(line) for line in Path('evals/cases/harness.jsonl').read_text().splitlines()]
+    cases = [
+        {'turns': [call('list_files', {}), final()], 'prompt': 'Inspect files', 'expected': 'completed'},
+        {'turns': [call('write_file', {'path': 'demo.txt', 'content': 'demo'}), final()],
+         'prompt': 'Write a file', 'deny': ['write_file'], 'expected': 'completed'},
+    ]
     for case in cases:
         run = runner(tmp_path, case['turns'], denied=case.get('deny', []))
         assert run.run(case['prompt']).status == case['expected']

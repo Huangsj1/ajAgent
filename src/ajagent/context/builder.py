@@ -50,6 +50,8 @@ class ContextBuilder:
                         item[field] = item[field][:self.options.tool_excerpt_chars] + '\n[Context excerpt truncated; full output in session history.]'
         # 2. If still doesn't fit, summarize the older history and keep only the last two groups
         if not fits():
+            if not self.options.summarization_enabled:
+                raise ContextError('Context exceeds budget and summarization is disabled; history is intact.')
             if len(recent) <= self.options.recent_groups:
                 raise ContextError('Recent messages exceed context budget; history is intact.')
             older, tail = recent[:-self.options.recent_groups], recent[-self.options.recent_groups:]

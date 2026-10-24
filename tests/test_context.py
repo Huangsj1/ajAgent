@@ -98,3 +98,21 @@ def test_oversized_summary_rolls_back_and_loop_ends(tmp_path):
     assert result.status == 'context_error'
     assert 'x' * 10000 in session.path.read_text()
     assert model.calls == 1
+
+
+def test_summary_can_be_disabled_without_touching_history():
+    from dataclasses import replace
+    from ajagent.options import DEFAULTS, Options
+
+    builder = ContextBuilder(1000, 100, replace(DEFAULTS.context, summarization_enabled=False))
+    groups = [[{'role': 'user', 'content': 'x' * 4000}]]
+
+    class Never:
+        def generate(self, *args):
+            raise AssertionError('disabled summarization called model')
+
+    with pytest.raises(ContextError, match='disabled'):
+        builder.build('system', groups, Never(), [])
+    assert len(groups[0][0]['content']) == 4000 and builder.covered == 0
+    with pytest.raises(ValueError, match='boolean'):
+        Options.from_config({'limits': {'context': {'summarization_enabled': 'false'}}})

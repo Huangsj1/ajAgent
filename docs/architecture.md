@@ -1,335 +1,131 @@
-# ajAgent Architecture
+# Architecture
 
 ```mermaid
 flowchart TD
-    U[CLI / config / memory / session] --> TM[ToolManager / 单一配置入口]
-    TM --> R[Runner: policy / budget / hooks]
-    TM --> CO[可选 Coordinator / 共享预算 / 单一发布]
-    CO --> N[research → write → review → revise 独立 Runner]
-    N --> L
-    CO --> A[版本化产物 / final 或 partial]
-    R --> BM[Budget: HIGH / LOW / FINALIZING]
-    BM --> BF[有界无工具收尾 / 硬限制]
-    R --> L[run_agent: 唯一循环]
-    R --> TP[TaskProgress: 计划 / 验收 / 持久化进度]
-    TP --> HC[检查点更新工作上下文]
-    HC --> L
-    TP --> TR[新会话按 task ID 恢复]
-    TR --> R
-    L --> C[Context builder / 必要时摘要]
-    C --> M[DeepSeek / GPT]
-    M --> D{输出}
-    D -->|工具调用| P[before_tool + allow / ask / deny]
-    P -->|允许副作用| I[保存 pending 检查点]
-    I --> T[执行工具 + after_tool]
-    P -->|只读允许| T
-    P -->|拒绝| O[结构化错误]
-    T --> O
-    O --> S[持久化完整消息批次 / 清除 pending]
-    S --> L
-    D -->|最终答案| V[before_finish 验证]
-    V -->|失败且修订少于两轮| L
-    V -->|通过 / 失败达上限| F[状态 + 停止原因 + session usage]
-    R -.观测.-> E[events.jsonl / artifacts / evidence map]
-    U --> SK[Skills metadata / 用户显式加载正文]
-    SK --> R
-    R --> SR[并行 read / 串行 write-execute 屏障]
-    SR --> T
-    T --> X[Fetch / Browser / Python / MCP]
-    T --> DE[多个 delegate: contract + 白名单]
-    DE --> CR[Child Runner / 同一个 run_agent]
-    CR --> HA[summary / evidence / proposals / status]
-    HA --> O
-    O --> AP[主 agent 审阅 / 基线与语法检查 / 串行 apply]
-    CR -.费用累计 + 父子预算约束.-> R
-    R -->|取消 / 预算耗尽| F
-    R -->|恢复发现未知副作用| W[waiting_for_user / 核对后继续]
+    U[CLI: prompt / resume / task] --> C[加载配置、项目规则和会话]
+    C --> T[ToolManager: 工具组与资源生命周期]
+    C --> R[Runner: 状态、预算、权限、事件]
+    T --> R
+    R --> B[ContextBuilder: 指令、记忆、进度、历史]
+    B --> M[DeepSeek / OpenAI 适配器]
+    M --> D{模型响应}
+    D -->|工具调用| P[校验参数、预算和权限]
+    P --> X[并行 read / 串行 write 和 execute]
+    X --> O[限制输出、保存证据与副作用状态]
+    O --> B
+    X --> S[按需检索、MCP、子任务]
+    D -->|最终答案| V[检查任务与完成条件]
+    V -->|需要继续| B
+    V -->|结束| F[结果、用量、session、run 日志]
+    R --> Q[LOW_BUDGET 收敛 / FINALIZING 无工具收尾]
+    Q --> M
 ```
 
+默认模式由主 agent 动态安排任务；Stage 7 的固定 research workflow 是单独的可选协调层。模型决定调用什么，Python 运行时决定是否允许执行、如何调度、是否达到完成条件。主流程不使用厂商 Agent SDK。
 
-> 当前 RAG 是可选工具；详细数据流与限制见 [RAG README](../src/ajagent/rag/README.md)。
-
-## 基础工具 CLI 流程
-
-```mermaid
-flowchart TD
-    CLI[CLI and local configuration] --> H[Initialize messages]
-    H --> B{Steps remaining?}
-    B -->|No| L[Return step_limit]
-    B -->|Yes| M[DeepSeek Chat Completions / OpenAI Responses]
-    M -->|Request or protocol error| E[Report failure]
-    M --> D{Output type}
-    D -->|Tool calls| T[Validate and execute read-only workspace tools]
-    T --> R[Append each result with tool_call_id]
-    R --> N{Three identical batches?}
-    N -->|No| B
-    N -->|Yes| P[Return no_progress]
-    D -->|Final text| F[Return completed]
-    D -->|Empty / refusal / incomplete| E
-```
-
-> 当前已实现 Stage 0–5。上图对应 `src/ajagent/core/loop.py` 的实际流程；以下是后续逐步演进的目标架构。
-
-## 目标流程
-
-```mermaid
-flowchart TD
-    U[User / CLI] --> C[Load local configuration]
-    C --> R[Runner: state and budget]
-    R --> X[Build context: instructions, history, memory]
-    X --> M[Model adapter: DeepSeek / OpenAI]
-    M --> D{Model output}
-    D -->|Tool calls| P[Validate arguments and permissions]
-    P -->|Allowed| T[Execute tool and hooks]
-    P -->|Denied or invalid| O[Tool result or error]
-    T --> O
-    O --> S[Persist result and emit events]
-    S --> R
-    D -->|Final answer| V[Check evidence and task criteria]
-    V -->|Needs revision within budget| R
-    V -->|Passed or explicit partial result| F[Return answer and artifacts]
-    D -->|API error or cancellation| E[Record stop reason and checkpoint]
-    R -->|Budget exhausted| E
-    T -. retrieve .-> K[Local document index]
-    T -. delegate .-> A[Child Runner with isolated context]
-```
-
-> 状态：Stage 5 已实现 Runner、状态、预算、权限、hooks、日志与恢复。图中 delegate/Child Runner 属于后续阶段，尚未实现。
-
-## 1. 核心设计
-
-模型提出下一步，Python 代码执行下一步。**Agent loop** 处理模型与工具之间的迭代；**harness** 组织上下文、执行权限、状态、预算、日志、恢复与验证。多 agent 复用同一个 Runner，通过任务输入和产物交换协作。
-
-设计参考 Claude Code 的[官方工作原理](https://code.claude.com/docs/en/how-claude-code-works)，但采用独立、简化实现。公开插件代码的观察与固定版本链接在 [TODO 的参考依据](TODO.md#2-claude-code-参考依据与边界) 中，不把插件实现视作完整核心源码。
-
-## 2. 模块职责与实现方式
-
-| 模块 | 实现方式与职责 | 引入阶段 |
-| --- | --- | --- |
-| `examples/minimal_agent.py` | 单文件、自行维护消息、工具字典和有界循环；保留教学用途 | 1 |
-| `options.py` | 不可变配置分组、统一默认值与校验，向各模块显式传递 | 5 后整理 |
-| `config.py` | 加载 TOML/环境变量；把密钥留在模型客户端侧，不进入模型上下文 | 2；阶段 1 内联最小加载 |
-| `cli.py` | 解析输入与配置选择，显示输出；不承载推理和工具逻辑 | 2 |
-| `core/types.py` | 少量 dataclass 定义消息、调用、结果、状态；不建设复杂类层次 | 2 |
-| `core/loop.py` | 请求模型、处理整批工具调用、回填结果、判断终止；唯一主循环 | 2 |
-| `models/` | DeepSeek Chat Completions / OpenAI Responses 的字段、续接与 usage 映射 | 2 |
-| `tools/` | ToolSpec 注册与执行；文件、数据库、检索、Web、浏览器、执行、委派逐步增加 | 2–6 |
-| `rag/` | 分层检索、chunk、Qwen embedding/rerank、HNSW 与增量索引 | 3 |
-| `context/` | 拼装本轮输入、预算估计、裁剪和摘要；不删除原始会话 | 4 |
-| `memory/` | JSONL 会话历史、显式长期记忆的增删查和来源记录 | 4 |
-| `harness/` | Runner 组合各组件，控制状态、策略、hooks、预算和事件；不复制 loop | 5 |
-| `tools/skills/`、`tools/mcp/` | 按需 skill 与持久 MCP 子系统 | 6 |
-| `multi_agent/` | 角色配置、结构化 handoff、确定性路由、有界修订 | 7 |
-| `tasks/` | 长任务进度、检查点、反馈候选；独立选修模块 | 8 |
-| `evals/` | 后续固定用例与运行报告；评估成功率、证据、延迟和 token | 5 起 |
-
-依赖方向：CLI → Runner → loop/context/model/tool 接口。工具通过显式参数获得 workspace 和运行上下文，不反向导入 CLI；RAG 由 retrieval 工具调用，不能另起隐藏的 agent loop。
-
-## 3. 最小数据契约
-
-这些字段是实现目标，可按实际需要简化；不是某家 API 的原样结构。
-
-| 数据 | 关键字段 | 约束 |
-| --- | --- | --- |
-| `ModelTurn` | text、tool_calls、usage、stop_reason、continuation_items | 保留协议续接必需信息，不只抽取 text |
-| `ToolCall` | call_id、name、arguments | ID 与结果一一关联；一轮可能有多个调用 |
-| `ToolSpec` | name、description、input_schema、handler、effect | effect 区分 read/write/execute，供权限判断 |
-| `ToolResult` | call_id、ok、data、error、sources、artifact_path | 错误是可反馈的结果；大输出引用 artifact |
-| `Source` | source_id、uri、locator、excerpt、content_hash | locator 可以是行号、chunk、SQL 查询描述或网页位置 |
-| `RunState` | run_id、session_id、status、step、budget、stop_reason | 完成、失败和上限停止不可混淆 |
-| `Handoff` | task_id、goal、inputs、evidence_ids、artifact_paths、criteria、budget | 不默认共享父任务完整上下文 |
-
-适配器分别负责 wire format：Chat Completions 的 assistant/tool 消息与 Responses 的 output items/function outputs 不强行压平成可互换消息。内部统一的是操作语义；原始协议续接状态由各适配器保存。跨厂商切换首版开启新 session。
-
-## 4. 单次任务的执行顺序
-
-1. CLI 读取用户任务；配置层构建厂商客户端，创建或恢复会话。
-2. Runner 检查终止状态与预算，context builder 组装项目指令、必要记忆和本轮历史。
-3. 模型适配器提交模型请求，解析成 ModelTurn，记录用量。
-4. 若包含工具调用，先记录整批请求，逐个校验参数与权限；拒绝也生成对应结果。
-5. 执行允许的工具，处理超时与错误，追加所有调用结果，再开始下一轮。
-6. 若产生最终答案，按任务类型运行引用或产物检查；检查失败在修订上限内反馈，否则返回明确失败/部分结果。
-7. 写入终态、停止原因、产物路径；用户能知道已完成什么和还缺什么。
-
-同一步中的独立 read 工具可并行，write/execute 按原顺序串行。暂时的 API 错误可以重试请求，不能因此重新执行已完成工具。模型拒绝、空输出和格式错误必须有明确分支。
-
-## 5. RAG 与记忆的数据流
-
-**RAG：** Agent 按需调用 retrieve → Local/Semantic/Web 召回 → 去重/RRF → 可选 Qwen rerank → 有界证据。Semantic 使用 Qwen query embedding 和 HNSW，索引增量更新并原子发布；正文缓存独立保存。当前最终回答引用路径/行号或 URL，不运行强制引用 guard。
-
-**短期上下文：** 当前 API 请求的工作集，受 token 预算限制。
-
-**会话历史：** 原始可恢复事件/消息；摘要不能覆盖它。
-
-**长期记忆：** 用户明确保存的偏好、纠正或稳定事实；可删除、有来源，按需进入新会话。
-
-**项目指令：** `AJAGENT.md`，由人维护的项目约定。它既不是检索知识库，也不是强制权限系统。工具权限由运行时代码执行。
-
-引用校验能证明 ID 来自可用证据，但不能单独证明语义蕴含；评测必须检查事实与摘录是否一致。记忆同样不能作为未经核实的权威事实。
-
-## 6. 配置与本地数据
-
-配置集中在 `config/`：入口 `config.local.toml` 通过 include 加载 runtime、models、tools、rag、harness 分片。模型凭据位于 `models.local.toml`，Tavily 与检索参数位于 `rag.local.toml`；所有 local 文件均被 Git 忽略。路径相对入口目录（workspace 相对工作目录），示例使用 `../knowledge` 指向根目录知识库。
-
-生成数据集中保存在忽略的 `.ajagent/` 下：
-
-```text
-.ajagent/
-├── models/                   # Local Qwen weights.
-├── sessions/                 # Original conversation history.
-├── memory/                   # Explicit cross-session notes.
-├── runs/<run_id>/             # Events, checkpoint, generated artifacts.
-├── tasks/                    # Optional long-running progress.
-└── eval-results/              # Local experiment outputs.
-```
-
-密钥不能出现在提示词、工具读取结果、日志或测试 fixture 中。文件工具不读取秘密配置；代码子进程只在学习工作目录中运行，并控制环境变量。它仍然是本机代码执行，不宣称提供完整沙箱隔离。
-
-## 7. Hooks、恢复与协作边界
-
-Hooks 首版是显式 Python 函数列表，只有 before_tool、after_tool、before_finish。策略在执行前决定是否允许；后置检查只提供结果反馈。检查失败最多触发有限次修订，避免永不结束。
-
-Checkpoint 保存已完成结果和待处理状态。工具执行与文件写入无法天然组成原子事务：恢复时若一个有副作用的调用结果未知，先核对或请求用户处理；不自动重试。仅会话恢复不等于文件回滚。
-
-Stage 7 coordinator 顺序调用独立上下文的 researcher/writer/reviewer/reviser。角色之间传递证据和产物，父级维护总预算和最终状态；多个角色使用同一模型也属于该实验。多 agent 是否更好由评测决定。
-
-## 8. 当前范围与后续维护
-
-Stage 0 已建立 uv 环境（Python 3.13）、pyproject.toml、uv.lock、配置模板、本地配置、忽略规则和学习日志。已安装 httpx 与 pytest。Stage 1 通过独立脚本实现配置加载、DeepSeek HTTP 请求、两个内存工具、消息回填和有界终止；配置优先级见 README。21 项离线测试与 deepseek-flash 的查笔记/加法真实演示通过。Stage 2 已实现 config、cli、core、models、tools；Stage 3 已实现分层 rag、可选 retrieve 和 Qwen rerank；Stage 4 已实现 context/memory 和会话恢复；Stage 5 已实现 harness；Stage 6 起的外部工具与委派仍为计划。每阶段完成后同步更新本段、流程图和模块状态。
-
-暂不做 Web UI、分布式执行、企业级权限、自动部署、复杂插件市场和多层 agent 递归。优先保持可读、可调试、可验证；新的模块应解决已遇到的问题。
-
-
-## 9. Stage 1 实现映射
-
-| 函数/数据 | 当前职责 |
-| --- | --- |
-| `TOOLS` / `NOTES` | 两个 JSON Schema 工具定义与固定学习笔记 |
-| `add` / `lookup_note` | 纯本地执行，无文件或网络副作用 |
-| `execute_tool` | JSON 解析、工具映射、参数错误转结果；不使用 eval |
-| `load_config` | CLI/环境变量/本地 TOML 合并，校验必填配置与上限 |
-| `run_agent` | messages → 请求 → 调用/答案分支 → 回填，最多 8 轮 |
-| `main` | 命令解析、HTTP 客户端生命周期、错误摘要和退出码 |
-| `tests/test_minimal_loop.py` | MockTransport 模拟模型响应，核对实际 HTTP 请求里的消息序列 |
-
-Stage 1 示例不提供文件权限策略、日志持久化、会话恢复或自动重试。step_limit 表示未完成；工具错误可以进入下一轮，但网络/协议错误直接结束。本阶段不执行隐藏推理内容，只保留 API 续接所需消息。
-
-
-## 10. Stage 2 实现映射
-
-- `config.py`：dataclass 保存一次运行配置，key 不参与 repr；选择厂商后只读取其密钥，CLI > 环境变量 > 文件 > 默认值。
-- `models/base.py`：ModelClient 协议和 HTTP 重试；HTTPModel 只复用传输机制，不统一 wire format。失败摘要不包含原始 API 响应体。
-- `models/deepseek.py`：Chat Completions schema、消息、reasoning_content 与 tool_call_id 映射。
-- `models/openai.py`：Responses schema、output items、call_id 与 function_call_output；store=false，完整回传 opaque reasoning。
-- `core/types.py`：ToolCall、ModelTurn、ToolResult、RunResult；usage 统一为 input_tokens/output_tokens。
-- `core/loop.py`：唯一包内循环，批次顺序执行、错误回填、用量累计、步数和重复批次终止。独立 Stage 1 示例仅作教学保留。
-- `tools/common/base.py`、`tools/common/registry.py`：普通字典注册、JSON Schema 校验、结构化结果和字符上限；意外工具异常隔离为 tool_error。
-- `tools/files/workspace.py`：workspace 路径边界、配置/隐藏路径与链接排除、UTF-8 行读取、字面量扫描；来源是文件路径和行号。
-- `tools/database/sqlite.py`：只读 URI + authorizer，禁止写入/ATTACH/PRAGMA；progress handler 控制查询时间，fetchmany 控制结果行数。
-- `cli.py`：组合配置、模型与 registry，输出简短工具状态、最终答案与 token 数；不持久保存历史。
-
-单次结果默认限制 6000 字符；截断会提供重新缩小查询的提示，丢弃不完整的 sources。连续三轮相同批次/相同结果判为无进展，不等价于通用语义进度检测。文件/SQL 超时是合作式机制，本阶段没有任意工具强制中断或安全沙箱。
-
-验证：`tests/test_stage2.py` 与 Stage 1 测试合计 54 项通过。两家真实模型均完成 fixture 文件搜索和读取，证明适配器实际闭环；这不代表所有模型/参数都支持相同协议。参考 [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling) 和 [Responses migration](https://developers.openai.com/api/docs/guides/migrate-to-responses)。
-
-
-## 11. Stage 3 分层实现
-
-| 模块 | 职责 |
-| --- | --- |
-| `rag/local/` | rg 精确搜索；Tree-sitter 符号与位置 |
-| `rag/semantic/chunks.py` | 文档章节、代码定义边界；PDF 文本提取 |
-| `rag/semantic/encoder.py` | 懒加载 Qwen；query instruction、last-token pooling |
-| `rag/semantic/store.py` | SQLite 元数据、独立 txt、NumPy 向量、增量 HNSW、generation 发布 |
-| `rag/web/` | Tavily SDK、摘录证据、URL 去重与单次请求错误返回 |
-| `rag/ranking/` | Qwen yes/no cross-encoder，最后 token logits |
-| `rag/service.py` | 配置、统一检索、多源去重/RRF、部分错误和精排 |
-| `tools/retrieval/search.py` | 可选 ToolSpec 与输出预算 |
-| `rag/cli.py` | 无聊天 key 的 index/update/search 命令 |
-| `rag/knowledge.py` | 独立源目录与输出目录的构建/更新接口；仅凭索引位置打开 |
-
-`[tools].enabled` 中的 `retrieval` 控制是否注册检索工具，开启不意味着必须调用。模型权重只在实际检索/精排时加载。Web 默认不启用。backend 失败转 warnings，模型需区分“检索失败”和“确实没有证据”。
-
-详细实现、数据格式、性能边界和验证见 [RAG README](../src/ajagent/rag/README.md) 与 [新版报告](experiments/rag-validation.md)。没有全自动事实核验、索引 GC 或持久会话；后续 harness 能在现有工具接口上加入这些能力。
-
-## 文件范围与知识库位置
-
-`tools/` 下按 common/runtime/files/database/retrieval/execution/web/delegation/skills/mcp 分组；共享协议、registry 和 evidence 放在 common，根目录仅保留包标记。文件与数据库工具仍以 agent workspace 为边界；RAG Local Search 可以通过 `[rag].local_path` 独立选择项目外目录或单个文件。
-
-SemanticIndex 的 root 是知识库源目录，不再绑定 agent workspace。index/update 将来源绝对路径与 embedding/chunk 配置保存在 SQLite settings 中；open_knowledge 读取这些 metadata，因此 agent 只需 `[rag].index` 即可使用外部索引。源文件仍需可访问用于 hash 新鲜度检查。service 在跨来源融合前把本地 URI 转为绝对路径，避免同名文件冲突。
-
-默认布局为 `knowledge/*` 原文与 `knowledge/.index/{CURRENT,texts,gen-*}` 生成文件；生成目录从扫描中排除。模型缓存继续放在 `.ajagent/models`。TOML 路径相对配置文件目录，CLI 路径相对当前目录，二者均可使用绝对路径。
-
-
-## Stage 4 当前实现
+## 模块职责
 
 | 模块 | 实现与职责 |
 | --- | --- |
-| `context/builder.py` | 构建输入副本、估算 token、扣除输出预算；超限先裁剪工具输出，再摘要较旧批次；保留最新用户消息与最近两个完整批次 |
-| `context/compaction.py` | 调用当前模型生成带目标、约束、完成项、未解问题、证据位置的摘要；一次失败即结束 |
-| `memory/session.py` | JSONL 追加事件；以完整模型输出及其全部工具结果为 replay 单位；恢复检查 provider/model，并读取摘要检查点 |
-| `memory/long_term.py` | workspace scope 显式记忆的增改查删，JSON 权威记录和 Markdown 可读投影；20 条、每条 1000 字符 |
-| `memory/cli.py` | `ajagent-memory remember/list/forget`，`remember --id` 更新，无需模型凭据 |
-| `cli.py` | 加载根目录 AJAGENT.md、可选记忆、会话和 builder；输出 Session ID、estimated 预算与结束状态 |
+| `cli.py`、`config.py`、`options.py` | 解析命令与分片配置、校验参数、集中默认值，组装运行资源 |
+| `core/loop.py`、`core/types.py` | 模型—工具—结果循环与统一响应类型，维护调用 ID 和续接消息 |
+| `models/` | DeepSeek / OpenAI 协议适配、usage 和错误归一化；不执行工具 |
+| `harness/` | Runner、Budget、权限、事件、状态、hooks、模型重试与 trace 回放 |
+| `context/` | 输入预算估算、工具输出收缩、历史摘要与协议完整性 |
+| `memory/` | JSONL 会话、恢复、累计用量、独立长期记忆 |
+| `tools/common/`、`tools/runtime/` | ToolSpec、注册与调用校验、统一配置装配、资源关闭 |
+| `tools/` 下各功能目录 | 文件、数据库、命令、网页、skills、MCP、委派、任务与检索的工具接口 |
+| `rag/` | 本地、语义和联网检索，分块、索引、重排与统一来源信息 |
+| `multi_agent/`、`agents/` | 可选的固定角色协调器、handoff 契约、角色提示词 |
+| `tasks/` | 可恢复任务计划、实际验收、检查点与用户反馈 |
+| `tests/` | 关键协议、权限、恢复、工具与预算行为的回归测试 |
 
-原始历史、输入副本、长期偏好各自独立。系统指令与记忆在每次启动时重建，恢复时不会回放旧 system 事件。原始工具结果在输出裁剪前记录；OpenAI reasoning 等协议项目随完整批次保留，压缩不能拆开 call/output。摘要作为历史数据消息注入，不成为新的项目指令。原始历史保留，不会因为摘要而删除；摘要内容由模型生成，并非可证明无损。
+入口命令与操作示例集中在 [README](../README.md)，阶段学习清单在 [TODO](TODO.md)。
 
-当前实现是单进程、单会话写入，摘要遇到超大历史时明确停止而不递归摘要。forget 删除显式记忆，不会清除旧对话文本。配置和操作示例见 README，测试见 `tests/test_context.py`、`tests/test_memory.py`。
+## 配置与装配
 
+`config/config.local.toml` 是默认入口，按 include 顺序递归合并配置，最后应用入口字段；表递归合并，数组整体替换。`Options` 负责默认值与类型校验，避免模块各自维护相同限额。
 
-会话写入采用内存 JSONL 缓冲：完整 replay 批次、约 64 KiB 阈值、运行退出时刷新。`append` 不再每次打开文件；`record` 是批次检查点。`run_agent` 统一在 finally 刷新，即使模型失败或用户取消也执行。Session 从最近 end 恢复 usage 累计快照，run_agent 将本次主模型与摘要增量加到该基线上，更新内存 usage 并统一写入一个 end。CLI 只显示结果，不重复累计或写 end。last_usage 单独保留本次运行最后主模型响应的报告值。
+`runtime` 管运行与上下文，`models` 管厂商与密钥，`tools` 管工具组与能力限额，`rag` 管检索，`harness` 管执行预算与策略，`tasks` 管持久任务，`coordination` 管固定角色流程。MCP server 清单独立加载，不作为普通 include 分片。
 
+include 路径相对声明文件；RAG、skills、mcp_config 等业务路径相对最外层配置入口；CLI 路径与 runtime.workspace 相对命令工作目录。MCP cwd 相对 MCP 配置文件。完整规则见 [配置目录](../config/README.md)。
 
-## Stage 5 当前实现
+`ToolManager` 按 `[tools].enabled` 装配所有工具组，统一处理 disabled 和依赖资源，不在 registry 中特殊硬编码 files/database。MCP、浏览器和子任务资源随运行关闭。模型只能看到实际注册的工具 schema。
 
-| 文件 | 职责 |
-| --- | --- |
-| `harness/runner.py` | 组合现有循环，执行权限和 hooks；保存 pending 检查点；将中断映射为状态 |
-| `harness/model.py` | 观测模型调用、统计 usage/耗时；将预算传给 HTTP 层 |
-| `harness/state.py` | running/waiting_for_user/completed/failed/cancelled 与 reason 分离 |
-| `harness/budget.py` | 当前 run 的工具数、token、墙钟预算；步数沿用 loop |
-| `harness/policy.py` | allow/ask/deny，session 内目标路径或完整命令授权，deny 优先 |
-| `harness/events.py` | run_id/step/call_id 事件、已知密钥脱敏、artifact、临时文件替换 checkpoint |
-| `harness/hooks.py` | 三个 hook 点、修改文件跟踪、Markdown 本地目标检查和可选检查命令 |
-| `harness/trace.py` | 无执行行为的离线 trace 查看/回放，以及测试用 FakeModel |
-| `tools/execution/runtime.py` | 写入 diff 预览和工作区路径检查；argv 子进程、输出/超时限额、取消时清理进程组 |
+## 工具调度与权限
 
-Runner 没有第二个推理循环；loop 只在步骤开始、上下文完成、工具执行、批次完成和最终候选答案处通知 harness。不传 harness 时仍可直接使用基础循环。已完成批次先写 session，再清除 pending；执行后尚未完成这一顺序时保持 unknown。未知副作用阻止新运行，要求显式核对。after_tool 无法撤销已经完成的写入。
+工具包含名称、JSON Schema、处理函数和 read/write/execute 属性。通用层统一校验参数、序列化结果；Runner 再施加预算、审批、hooks 和事件记录。未知工具、非法参数和工具失败作为结构化观察返回，不能伪装成功。
 
-Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模型与摘要请求，取消/预算结束也记录已报告用量；last_usage 保留主模型的最后一次响应，摘要不覆盖它。恢复的历史 usage 不计入新 run 的预算。价格不在当前实现范围内。
+同一模型响应中可并行的 read 调用按有限 worker 数执行，write/execute 顺序执行；完整工具结果按调用 ID 回填后再请求模型。该分类是调度约定，外部 MCP 的只读声明仍依赖配置与 server 的准确性。
 
-日志不复制无限工具输出；较大结果写到脱敏 artifact，协议结果只传预览和读取位置。Markdown 引用检查是局部语法/文件存在性检查，不能证明语义支持。进程内工作在边界检查预算；命令不是沙箱。完整限制和 CLI 参数见 README。
+权限为 allow/ask/deny。用户可批准 once、当前 scope 的 session 或会话 allow_all；deny 优先。权限状态随会话恢复。文件工具限制访问范围并排除秘密文件；检索可通过显式配置访问外部资料目录，不能因此获得任意外部写入权限。
 
-配置与职责整理见 [configuration](configuration.md)：工具 prepare/invoke 统一、HTTP 超时单一归属、Session.finish 统一记录结束状态。
+命令使用 argv、可执行程序允许列表、超时和输出上限。较大观察写为 artifact，仅将受限摘录放入上下文。工具传输成功不代表命令 exit code 为 0，也不代表任务通过验收。
 
-## 统一工具入口与并行任务
+文件写入经 `FileHistory` 保存备份、diff 和前后哈希；恢复前核对当前内容，避免覆盖后来的修改。任意命令、数据库、网络等副作用不属于文件回滚范围。
 
-`tools/runtime/loader.py::ToolManager` 是唯一装配入口，读取 `[tools]`，创建所需工具并统一管理资源清理。`common/registry.py` 只包含通用解析、校验、分发和序列化。CLI 与 Runner 不再分别增加工具；扩展分类目录已移除。
+## 上下文、会话和记忆
 
-- Skills：启动只注入 metadata，`load_skill` 与用户 `/skill` 共用正文加载器。
-- MCP：`MCPManager` 管理多个持久 client；每个 server 的线程内维持同一 SDK session，支持 stdio 与 Streamable HTTP。根据本地配置赋予 read/execute 状态，工具名包含 server 名。
-- 调度：Runner 将连续且可并行的只读调用提交线程池，写/执行操作形成串行屏障，结果按原 call 顺序回填。页面状态、模型缓存等需要额外串行约束。
-- 子任务：主 agent 可在同一步提出多个带 contract 的 delegate 调用；child 只读与输出内部提案，隔离消息、模型适配器与状态；共享父级预算锁、在途 token 预留和全局取消信号。
-- Single writer：child 生成候选内容和 diff artifact。主 agent 审阅后串行 apply，执行基线 hash、路径和语法检查，再进入既有验证反馈；逻辑冲突仍由主 agent 和测试判断。
+ContextBuilder 组合系统指令、AJAGENT.md、可用 skills 描述、长期记忆、任务进度和会话历史。工具请求及对应结果作为协议组处理，不截出无法续接的孤立消息。超出输入预算时先限制观察，再摘要旧历史；原始 session 历史保留。
 
-详细字段、目录职责与数据流见 [Tools README](../src/ajagent/tools/README.md)、[MCP README](../src/ajagent/tools/mcp/README.md) 和 [配置说明](configuration.md)。
+`[limits.context].summarization_enabled=false` 可关闭摘要。若仅靠缩短观察仍无法容纳请求，返回 context_error，不静默丢弃原始历史。
 
-参考 [Claude Code 子代理](https://code.claude.com/docs/en/sub-agents) 的独立上下文/工具访问、[Skills](https://code.claude.com/docs/en/skills) 的按需指导，以及 [MCP 传输规范](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)。这是本项目的简化实现，不宣称复刻闭源内部代码。
+Session 使用 JSONL 记录消息、审批和结束状态；常规记录缓冲，关键持久化边界刷新。运行结束通过统一入口保存状态与用量。副作用 checkpoint 必须在执行前保存，不能为减少 I/O 而延后到最终退出。
 
-## Stage 7：确定性多角色协调
+`--resume` 校验 workspace、provider、model 后继续原会话。session 的 total usage 从上次结束记录累加，包含摘要和子任务消耗；last_usage 记录主模型最后一次请求，不能将二者相互替代。长期记忆是独立的显式条目，不等同于历史摘要；用户反馈需审核后才能写入。
 
-`multi_agent/runtime.py` 复用现有 CLI 设置和模型适配器；`roles.py` 为角色构建独立 Runner/Session/ContextBuilder 与分层 Budget；`handoff.py` 定义显式任务和产出契约；`coordinator.py` 路由研究、写作、审阅和有限修订并唯一发布 final.md。各节点仍调用同一 run_agent。
+## Budget 与结束协议
 
-只有研究角色可显式复用 Stage 6 的并行 delegate，worker 不继续委派；权限和费用向父级传播。writer/reviser 将文稿作为结构化输出返回，由 coordinator 保存 draft-vN，reviewer 不直接写稿。research 的实际来源 ID 和有界观察内容保存在 evidence.json，所有角色通过有限 Handoff 交流，不共享聊天历史。最终 Sources 表给出引用定位；语义支持仍由 reviewer 检查，不能将 ID 有效等同于事实正确。
+`harness/budget.py` 的 `Budget` 统一统计 steps、工具调用、token 和时间；子任务与摘要不能绕过父预算。配置与 CLI 决定上限，启动输出实际值。一次恢复建立新运行预算，但 session 费用累计继续保留。
 
-失败、取消和预算耗尽保留已有产物；未通过审阅不会创建 final.md。workflow 续跑留给 Stage 8。模块与流程细节见 [multi_agent README](../src/ajagent/multi_agent/README.md)，真实收益/成本见 [对比报告](experiments/multi-agent-comparison.md)。
+- **HIGH_BUDGET**：允许探索、调查与实现。
+- **LOW_BUDGET**：系统提示要求聚焦未完成交付物、减少重复观察，优先验收。
+- **FINALIZING**：不再提供工具，使用有界上下文与输出额度尝试最终总结。
 
-## Stage 8：动态主 agent 的持久化任务
+阶段按剩余资源计算；steps 单独预留最后一步，避免长任务过早按比例失去工具能力。重复调用和任务长时间无进展会触发收敛提示，不自动提高额度。硬时间或 token 已不足时，不能保证还能发出最后一次请求。
 
-默认仍是 Runner + run_agent，按需 delegate；不切换为 Stage 7 固定角色链。`tasks/progress.py` 管理 pending/running/passed/failed 和一个活动目标，verify_task 通过既有 Runner 执行声明的 argv 检查，保存 exit code、run/call ID 与产物哈希。变动的已通过文件退回 pending。文件布局变化可记录原因并更新未完成路径，不能直接重写验收条件或伪造 passed。
+API 错误与预算结束分别记录。模型请求对可恢复的网络、限流和服务端错误作有界重试，不因此重放工具副作用；账单或参数错误不应当靠提高 steps 解决。错误日志保留类别、状态与请求诊断，避免输出密钥。
 
-每段 checkpoint 或验收通过后，下一个完整批次边界使用任务事实替换旧工作上下文；session 完整历史和累计 token 保留。任务保存上一 run ID，fresh session 的 --task 仍检查未知副作用。进程级 flock 防止两个主 agent 同时修改同一任务。`tasks/feedback.py` 的用户纠正候选由 CLI 显式审核后才写 Memory。
+## RAG 与读取缓存
 
-`tools/files/history.py` 保存 before.bin/change.diff/前后哈希，文件写入原子替换，restore_file 拒绝覆盖后来编辑。命令/数据库副作用没有通用回滚。命令输出和 artifact 预览保留诊断尾部；结构校验返回具体参数约束；截断模型输出保留不完整文字但不执行部分工具请求。模块与使用说明见 [tasks README](../src/ajagent/tasks/README.md)。
+RAG 通过可选 `retrieve` 工具接入；启用后也不要求每个问题检索。Local Search 使用 rg / Tree-sitter；Semantic Search 按文档结构或代码符号分块，以 NumPy、SQLite、HNSW 保存向量和来源；Web Search 使用 Tavily 官方客户端。统一层合并、去重、排序并可使用 Qwen 重排，返回来源与诊断。
 
-预算的统一计费、阶段转换、收尾协议和真实编码对比见 [Budget Manager](budget-management.md)。
+知识库原文和索引位置可独立指定。索引按 generation 构建并发布 CURRENT，增量更新复用未变化内容；旧 generation 不自动回收。原文提取与索引数据布局见 [RAG README](../src/ajagent/rag/README.md)。
+
+`tools/files/cache.py` 为 read_file 提供有界内存 LRU。每次访问仍检查路径权限与文件元数据，修改、替换或元数据变化使缓存失效；不缓存审批或副作用。`limits.tools.read_cache_bytes` 控制缓存数据容量，0 关闭；该数值不是进程总内存上限。
+
+来源可追溯仅证明来源身份，不证明回答语义一定得到支持。抓取与搜索内容按不可信资料处理。
+
+## 子任务与固定 workflow
+
+动态 `delegate` 使用独立上下文和 task contract，约束目标、输入、验收与返回内容。同一步可并行多个子任务；worker 不递归委派，不直接修改共享文件。子任务返回分析或 proposal，主 agent 检查并顺序 apply，避免多个写入者互相覆盖；仍需实际测试验证语义一致性。
+
+固定 research workflow 复用 Runner，按 research → write → review → revise 路由。角色输出遵循 JSON handoff；证据 ID 必须来自实际观察，coordinator 统一保存版本与发布。修订和失败重试均有上限，审阅不通过则保留草稿并返回 partial，不能创建成功的 final.md。
+
+默认不开启固定 workflow，也不支持固定 workflow 的 `--resume` / `--task`。角色与产物细节见 [协作说明](../src/ajagent/multi_agent/README.md)。
+
+## 持久任务、恢复与反馈
+
+复杂任务由 plan_tasks 建立小目标、required paths 和验收命令，状态为 pending/running/passed/failed。一个主 agent 持有任务锁，逐项目实现；verify_task 真正执行检查，要求 exit code、产物与文件哈希满足条件后才能标 passed。后续修改使旧验收失效。
+
+checkpoint_task 保存进度；默认在完整协议批次边界刷新工作上下文，留下用户目标、规则与事实进度，避免不断重发旧观察。原 session 与累计用量保留。`--task` 开新会话读取计划；`--resume` 则恢复会话及绑定任务。
+
+```text
+.ajagent/
+├── sessions/              # 会话消息、审批和累计用量
+├── runs/                 # 事件、运行状态、检查点与 artifacts
+├── tasks/<task_id>/
+│   ├── tasks.json        # 权威任务状态与验收证据
+│   ├── progress.md       # 面向人和模型的进度投影
+│   ├── checkpoints/
+│   └── feedback/
+└── changes/              # 文件工具的备份与 diff
+```
+
+副作用可能已执行但结果未知时，恢复不会自动重放；需核对真实状态后再使用 `--acknowledge-unknown`。任务锁使用 POSIX flock，当前面向 Linux/macOS。没有后台无限重启、跨机器调度或环境整体回滚。详细状态规则见 [任务说明](../src/ajagent/tasks/README.md)。
+
+## 可观测性与验证
+
+Runner 记录模型调用、工具开始/结束、预算阶段、失败和最终状态。`ajagent-trace --replay` 只读取已有事件，不访问模型或重做操作；中断和失败保留已有产物及诊断。
+
+使用 `uv run pytest -q tests` 检查运行协议、权限拒绝、共享预算、缓存失效、索引更新和中断恢复等行为。回归测试属于实现维护；运行日志留在工作目录，不将生成项目或历史试验报告作为主文档的一部分。

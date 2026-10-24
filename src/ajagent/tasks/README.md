@@ -37,7 +37,7 @@ uv run ajagent --task TASK_ID '根据已有进度继续'
 
 `config/tasks.local.toml` 定义任务数/文本/检查/文件上限和 compact_on_checkpoint。max_idle_steps 默认 12：长时间只有观察而没有文件工具修改或任务状态更新时，提示收敛到下一验收/修改，不自动增加预算或假装进展。默认 checkpoint_task 或 verify_task 通过后，在下一完整协议批次边界切换工作上下文：保留当前用户请求、项目规则和落盘进度，不再反复发送所有旧工具内容。原始 session 消息、累计用量和审批记录不删除。关闭 compact_on_checkpoint 可继续使用普通上下文压缩。
 
-当前运行配置默认上限为 100 steps、300 次工具调用、200 万 token、30 分钟；单次输出 8,192 token、命令 30 秒。子任务为 16 steps / 30 工具调用 / 10 万 token / 5 分钟，并受父预算限制。这些都是上限，不是预先消耗量；仍需按模型费用和任务调整。恢复开启新运行预算，不自动无限续跑；session 累计 token 语义不变。
+当前运行配置默认上限为 300 steps、900 次工具调用、600 万 token、60 分钟；单次输出 16,384 token、命令 30 秒。子任务为 16 steps / 30 工具调用 / 10 万 token / 5 分钟，并受父预算限制。这些都是上限，不是预先消耗量；仍需按模型费用和任务调整。恢复开启新运行预算，不自动无限续跑；session 累计 token 语义不变。
 
 `[harness].auto_approve_tools` 是明确配置的自动批准列表，deny 优先。默认仅批准内部 plan/start/checkpoint/verify 工具；verify 内部的 run_command 仍需命令执行权限。无人值守编码需在专门的 workspace 配置中显式允许 write_file/run_command/run_python/apply_proposal 等。主配置不默认放开这些副作用。
 
@@ -51,7 +51,7 @@ uv run ajagent --task TASK_ID '根据已有进度继续'
 - `tools/files/history.py`：文件工具写入前备份、完整 diff、原子替换及按哈希回滚。
 - `tools/common/persistence.py`：共享标识符校验和原子 JSON 写入。
 
-状态为 pending / running / passed / failed。仅 verify_task 的真实检查全部 exit 0、required paths 存在且检查期间内容未变，才能标 passed。验收命令可以生成此前不存在的产物；已有文件若在检查期间改变则不标通过。拆分文件后可用 update_task_paths 更新未通过目标的路径并记录原因，原验收条件和命令不变。开始/查看/完成时会重新核对已通过项的文件哈希；文件变化或缺失会退回 pending，不能靠旧测试结果宣告完成。验收质量取决于指定检查，空测试或总是返回 0 的脚本并不能证明业务正确，因此编码试验另做独立黑盒审计。
+状态为 pending / running / passed / failed。仅 verify_task 的真实检查全部 exit 0、required paths 存在且检查期间内容未变，才能标 passed。验收命令可以生成此前不存在的产物；已有文件若在检查期间改变则不标通过。拆分文件后可用 update_task_paths 更新未通过目标的路径并记录原因，原验收条件和命令不变。开始/查看/完成时会重新核对已通过项的文件哈希；文件变化或缺失会退回 pending，不能靠旧测试结果宣告完成。验收质量取决于指定检查，空测试或总是返回 0 的脚本并不能证明业务正确，因此需要编写有实际断言的验收检查。
 
 运行中断时 running 保持未完成。新会话从任务记录关联到上一 run 的 pending checkpoint；可能已发生但结果未知的副作用仍会阻止续跑，必须人工检查后使用现有 `--acknowledge-unknown`，不会因为换了会话就自动重放。
 
@@ -83,6 +83,5 @@ uv run ajagent-task reject-feedback TASK_ID CANDIDATE_ID
 
 离线测试真实启动一个子进程，在三段任务的第二段退出；新 Runner 恢复后只完成未通过目标。覆盖失败不能伪装 passed、文件变化使验收失效、未知副作用、锁、备份冲突、反馈审核、检查点上下文和累计用量。
 
-实际试验项目为 `examples/projects/expense_tracker`，由本项目 agent 编写；测试结果与失败改进见 `docs/experiments/long-task-validation.md`。独立审计脚本：`uv run python evals/long_task_audit.py`。不实现后台常驻、自动无上限重启、跨机器调度或环境整体回滚。
 
 参考 [Anthropic 长任务 harness 文章](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents) 的小目标、事实进度与实际测试原则；本项目采用默认主 agent 动态委派，未使用其 Agent SDK 或固定 initializer/coder 工作流。

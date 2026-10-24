@@ -19,7 +19,7 @@ flowchart TD
 ## 使用
 
 ```sh
-uv run ajagent --workflow research '根据 knowledge/04-release-v1.md 和 knowledge/05-release-v2.md，说明当前保留期并区分历史版本'
+uv run ajagent --workflow research '阅读 README.md 和 docs/architecture.md，撰写项目设计说明并审阅引用'
 uv run ajagent --workflow single '普通任务'
 ```
 
@@ -56,12 +56,11 @@ final.md                           # 仅 review 通过后生成
 result.json                        # 状态、原因、失败、最后 review 与用量
 ```
 
-失败保留已有草稿和审阅意见。角色输出不能自行产生 final.md。取消/预算耗尽不会发布成功；HTTP 请求受既有剩余时间约束。本阶段不实现 workflow 断点恢复，`--resume` 不可与 research workflow 使用，恢复交给 Stage 8。
+失败保留已有草稿和审阅意见。角色输出不能自行产生 final.md。取消/预算耗尽不会发布成功；HTTP 请求受既有剩余时间约束。固定 workflow 不支持 `--resume` 或 `--task`；需要持久恢复时使用默认主 agent 的 task 功能。
 
 ## 验证与参考
 
 `uv run pytest tests/test_coordinator.py -q` 覆盖失败→修订→通过、空证据、引用与契约错误、有限重试/修订、取消、共享预算和研究并行委派边界。
 
-真实模型对比：`uv run python evals/compare.py`（会调用付费 API）。默认 10 个任务、每模式 3 次、同模型/资料/预算，结果写入 `.ajagent/eval-results/`。报告见 `docs/experiments/multi-agent-comparison.md`。
 
 参考 [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) 的独立上下文、指定工具与模型设计；角色链、JSON 合同和单一发布者是本项目的简化实现，不代表 Claude Code 内部核心实现。

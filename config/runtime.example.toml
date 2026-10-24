@@ -10,6 +10,7 @@ tool_timeout = 30.0
 max_output_chars = 12000
 
 [limits.context]
+summarization_enabled = true
 tool_excerpt_chars = 1000
 recent_groups = 2
 summary_overhead_tokens = 256

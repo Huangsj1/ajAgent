@@ -17,6 +17,7 @@ class RuntimeDefaults:
 
 @dataclass(frozen=True)
 class ToolOptions:
+    read_cache_bytes: int = 8388608
     max_file_bytes: int = 1000000
     max_scan_files: int = 1000
     max_list_files: int = 100
@@ -65,6 +66,7 @@ class CapabilityOptions:
 
 @dataclass(frozen=True)
 class ContextOptions:
+    summarization_enabled: bool = True
     tool_excerpt_chars: int = 1000
     recent_groups: int = 2
     summary_overhead_tokens: int = 256
@@ -190,8 +192,11 @@ class Options:
                     if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
                         raise ValueError(f'{name} must be a list of nonempty strings')
                     value = tuple(value)
+                elif annotations[name] is bool:
+                    if type(value) is not bool:
+                        raise ValueError(f'{name} must be boolean')
                 elif annotations[name] is int:
-                    minimum = 0 if name in {'max_repairs', 'hnsw_seed'} else 1
+                    minimum = 0 if name in {'max_repairs', 'hnsw_seed', 'read_cache_bytes'} else 1
                     if type(value) is not int or value < minimum:
                         raise ValueError(f'{name} must be an integer >= {minimum}')
                 elif annotations[name] is float:
