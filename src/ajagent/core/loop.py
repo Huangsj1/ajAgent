@@ -79,7 +79,8 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
         if turn.stop_reason != "completed":
             if session:
                 session.append({'event': 'incomplete', 'items': turn.continuation_items})
-            return finish(turn.stop_reason, "Model did not complete the task.", step, usage)
+            partial = "Incomplete model output (not verified):\n" + turn.text if turn.stop_reason == "incomplete" and turn.text.strip() else "Model did not complete the task."
+            return finish(turn.stop_reason, partial, step, usage)
         if session:
             session.append({'event': 'model_output', 'items': turn.continuation_items})
         # 1. add LM's response("message" or "outputs")

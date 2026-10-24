@@ -18,6 +18,7 @@ done
 | `models` | DeepSeek / OpenAI 模型与 API key |
 | `tools` | 工具组开关、skills/MCP 路径、工具限额、委派与并发参数 |
 | `rag` | 知识库、索引、embedding/reranker、检索限额和 Tavily key |
+| `tasks` | 持久化计划上限、检查点上下文刷新、无进展提醒 |
 | `coordination` | 协作默认开关、角色提示词路径、角色模型/工具裁剪、节点重试与修订上限 |
 | `harness` | 执行预算、artifact、日志、验证与拒绝列表 |
 | `mcp` | 独立的 server 清单，由 MCPManager 按需加载 |
@@ -29,3 +30,5 @@ done
 include 路径相对声明它的文件；业务路径（RAG、skills、mcp_config）始终相对最外层入口文件，分片位置不改变含义。例如 `../knowledge` 指项目根目录的知识库。`runtime.workspace` 仍相对命令工作目录，CLI 的路径覆盖保持原语义。MCP server 的 cwd 则相对 MCP 配置文件；测试示例使用 `cwd = ".."`。
 
 所有 `*.local.toml` 都被 Git 忽略并被文件工具排除。只在 local 文件填写凭据，不要填写 example 文件。修改一类配置只需编辑相应 local 分片。
+
+默认保持主 agent 动态委派，coordination.enabled=false。长任务的工具开关在 tools.local.toml，状态配置在 tasks.local.toml，运行预算在 runtime/harness 分片；auto_approve_tools 只自动批准明确列出的工具，deny 始终优先。

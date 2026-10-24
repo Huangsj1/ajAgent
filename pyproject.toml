@@ -25,6 +25,7 @@ build-backend = "hatchling.build"
 ajagent = "ajagent.cli:main"
 ajagent-trace = "ajagent.harness.trace:main"
 ajagent-memory = "ajagent.memory.cli:main"
+ajagent-task = "ajagent.tasks.cli:main"
 ajagent-rag = "ajagent.rag.cli:main"
 
 [project.optional-dependencies]

@@ -34,7 +34,7 @@ class Runner:
         self.clean = redactor(secrets)
         session.clean = self.clean
         self.events = Events(session.path.parent.parent, self.clean)
-        self.policy = Policy(session, ask, (*self.options.deny_tools, *denied))
+        self.policy = Policy(session, ask, (*self.options.deny_tools, *denied), self.options.auto_approve_tools)
         self.hooks = hooks or Hooks(execution.workspace, list(self.options.validation_command) or None, self.options)
         self.budget = budget or Budget(self.options.max_tool_calls, self.options.max_tokens, self.options.max_seconds)
         self.supplement, self.loop = supplement, loop
@@ -46,6 +46,8 @@ class Runner:
         self.last_usage = None
         self.needs_permission = False
         self.previous_run = session.run_id
+        self.context_handoff = None
+        self.step_hooks = []
 
     def artifact_tool(self):
         from ajagent.tools.common.base import ToolSpec, schema
@@ -82,7 +84,15 @@ class Runner:
         self.step = step
         self.building_context = True
         self.budget.check()
-        return self.supplement(step) if self.supplement else None
+        if self.context_handoff is not None and self.builder is not None:
+            self.builder.summary = self.clean(self.context_handoff())
+            self.builder.covered = len(self.session.groups)
+            self.context_handoff = None
+            self.events.emit('task_context_checkpoint', step, covered=self.builder.covered)
+        additions = [message for hook in self.step_hooks if (message := hook(step))]
+        if self.supplement and (message := self.supplement(step)):
+            additions.append(message)
+        return '\n'.join(additions) or None
 
     def context_ready(self, previous_covered):
         self.building_context = False
@@ -117,7 +127,7 @@ class Runner:
                 description['review'] = args['review']
             if call.name == 'write_file':
                 description = self.execution.preview(**args)
-            if tool.effect != 'read' and self.policy.key(tool, args) not in self.policy.grants:
+            if self.policy.needs_approval(tool, args):
                 self.events.emit('permission_requested', self.step, call.call_id, tool=call.name,
                                    summary=description)
                 self.state.status = 'waiting_for_user'
@@ -153,7 +163,11 @@ class Runner:
         encoded = json.dumps(asdict(result), ensure_ascii=False)
         if len(encoded) > min(self.options.artifact_threshold_chars, self.output_limit):
             path = self.events.artifact(asdict(result))
-            result.data = {'preview': encoded[:min(self.options.artifact_preview_chars, self.output_limit // 4)], 'artifact': str(path),
+            size = min(self.options.artifact_preview_chars, self.output_limit // 4)
+            preview = encoded[:size]
+            if call.name in {'run_command', 'run_python'}:
+                preview = encoded[:size // 2] + '\n...\n' + encoded[-size // 2:]
+            result.data = {'preview': preview, 'artifact': str(path),
                            'hint': 'Use read_artifact to read a bounded slice', 'truncated': True}
         self.events.emit('tool_finished', self.step, call.call_id, tool=call.name,
                            elapsed=time.monotonic() - started, ok=result.ok,
@@ -218,6 +232,7 @@ class Runner:
 
     def run(self, prompt, *, max_steps=RUNTIME.max_steps, max_output_chars=RUNTIME.max_output_chars, on_tool=None, system_prompt='', acknowledge_unknown=False):
         self.output_limit = max_output_chars
+        self.current_request = prompt
         baseline = dict(self.session.usage)
         if self.previous_run:
             previous = self.events.root.parent / self.previous_run / 'checkpoint.json'

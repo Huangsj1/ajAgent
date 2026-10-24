@@ -51,12 +51,12 @@ def delegation_tool(parent, model_factory=None, client=None, *, allow_nested=Fal
             registry['fetch_url'] = fetch_tool(client, limits, child.budget.remaining_seconds)
         parent.events.emit('delegation_started', parent.step, child_run=child.events.id, role=role)
         result = child.run(json.dumps(contract, ensure_ascii=False), max_steps=limits.child_steps, max_output_chars=parent.output_limit,
-                           system_prompt=SYSTEM + f'\nYou are a {role}. Return a concise source-backed summary and unresolved issues. Follow the task contract and acceptance criteria. Use propose_patch for drafts or changes, never modify workspace files. Do not delegate.')
+                           system_prompt=SYSTEM + f'\nYou are a {role}. Return a source-backed summary and unresolved issues in at most {limits.summary_chars} characters. Keep reports focused; use proposal artifacts for code instead of long prose. Follow the task contract and acceptance criteria. Use propose_patch for drafts or changes, never modify workspace files. Do not delegate.')
         report = {'status': result.status, 'summary': result.answer[:limits.summary_chars],
                   'summary_truncated': len(result.answer) > limits.summary_chars,
                   'proposals': proposals.created, 'evidence': child.evidence.values(), 'usage': dict(child.used), 'run_id': child.events.id}
         # The report is a durable handoff; transcripts stay in the child session.
-        artifact = child.events.artifact(dict(report, contract=contract))
+        artifact = child.events.artifact(dict(report, contract=contract, full_answer=result.answer))
         report['artifacts'] = [str(path) for path in sorted(artifact.parent.glob('*.json'))]
         parent.events.emit('delegation_finished', parent.step, child_run=child.events.id,
                            status=result.status, usage=child.used, artifacts=report['artifacts'])

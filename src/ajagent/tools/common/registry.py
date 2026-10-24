@@ -21,8 +21,12 @@ def prepare(call, registry):
         args = json.loads(call.arguments, parse_constant=reject_constant)
     except (ValueError, TypeError):
         raise ToolError('invalid_arguments', 'Use a valid JSON argument object') from None
-    if not Draft202012Validator(tool.input_schema).is_valid(args):
-        raise ToolError('invalid_arguments', 'Arguments must match the advertised JSON schema')
+    error = next(Draft202012Validator(tool.input_schema).iter_errors(args), None)
+    if error is not None:
+        location = '.'.join(map(str, error.absolute_path)) or '<arguments>'
+        # Report the schema constraint, never echo secret-bearing argument values.
+        rule = json.dumps(error.validator_value, ensure_ascii=False)
+        raise ToolError('invalid_arguments', f'{location}: {error.validator} constraint is {rule}')
     return tool, args
 
 

@@ -1,15 +1,18 @@
 [harness]
 max_repairs = 2
-artifact_threshold_chars = 6000
-artifact_preview_chars = 1500
-artifact_read_chars = 2000
+artifact_threshold_chars = 12000
+artifact_preview_chars = 3000
+artifact_read_chars = 8000
 artifact_max_offset = 10000000
 model_log_chars = 500
 tool_log_chars = 2000
 validation_feedback_chars = 2000
-max_tool_calls = 30
-max_tokens = 100000
-max_seconds = 300
+max_tool_calls = 300
+max_tokens = 3000000
+max_seconds = 1800
 deny_tools = []
 validation_command = []
 
+
+# Approve only internal task tracking; commands and workspace writes still need consent.
+auto_approve_tools = ["plan_tasks", "update_task_paths", "start_task", "checkpoint_task", "verify_task"]

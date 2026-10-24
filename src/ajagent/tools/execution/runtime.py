@@ -6,6 +6,7 @@ import signal
 import subprocess
 import time
 import sys
+from ajagent.tools.files.history import FileHistory, replace_file
 from ajagent.options import DEFAULTS, RUNTIME
 from ajagent.tools.common.base import ToolError, ToolSpec, schema
 
@@ -18,6 +19,8 @@ def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate else subprocess.STDOUT,
                                start_new_session=True)
     output = {'stdout': bytearray(), 'stderr': bytearray()}
+    tails = {'stdout': bytearray(), 'stderr': bytearray()}
+    capacity = output_limit // 2 if separate else output_limit
     truncated = False
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, 'stdout')
@@ -33,13 +36,20 @@ def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
-                room = max(0, output_limit - sum(map(len, output.values())))
-                output[key.data].extend(chunk[:room])
-                truncated |= len(chunk) > room
+                # Keep the start and the end: test failures are often at the end.
+                head, tail = output[key.data], tails[key.data]
+                room = max(0, capacity // 2 - len(head))
+                head.extend(chunk[:room])
+                tail.extend(chunk[room:])
+                tail_limit = capacity - capacity // 2
+                if len(tail) > tail_limit:
+                    del tail[:len(tail) - tail_limit]
+                    truncated = True
         process.wait(timeout=max(.001, deadline - time.monotonic()))
-        decoded = {key: value.decode('utf-8', errors='replace') for key, value in output.items()}
+        decoded = {key: (value + tails[key]).decode('utf-8', errors='replace') for key, value in output.items()}
         streams = decoded if separate else {'output': decoded['stdout']}
-        return {'exit_code': process.returncode, **streams, 'truncated': truncated}, []
+        return {'exit_code': process.returncode, **streams, 'truncated': truncated,
+                'output_layout': 'head_tail' if truncated else 'complete'}, []
     except subprocess.TimeoutExpired:
         raise ToolError('timeout', 'Command timed out; process group terminated') from None
     finally:
@@ -60,6 +70,7 @@ class Execution:
         self.workspace = workspace
         self.options = workspace.options
         self.timeout = workspace.timeout
+        self.history = FileHistory(workspace)
 
     def preview(self, path, content):
         """Preview the diff of a workspace file write"""
@@ -76,7 +87,10 @@ class Execution:
         change = self.preview(path, content)
         target = self.workspace.resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding='utf-8')
+        backup = self.history.prepare(path, content)
+        replace_file(target, content.encode('utf-8'))
+        self.history.applied(backup)
+        change['change_id'] = backup['id']
         return change, [{'path': path}]
 
     def run_command(self, argv, directory='.'):
@@ -94,7 +108,9 @@ class Execution:
         return data, [{'path': path, 'kind': 'script'}]
 
     def specs(self):
-        return [ToolSpec('run_python', 'Execute an approved workspace Python script in a subprocess (not a sandbox).', schema({
+        return [ToolSpec('restore_file', 'Restore one file-tool write only when its current hash still matches. Does not undo commands or external changes.',
+                         schema({'change_id': {'type':'string', 'pattern':'^[a-f0-9]{32}$'}}, ['change_id']), self.history.restore, 'execute'),
+                ToolSpec('run_python', 'Execute an approved workspace Python script in a subprocess (not a sandbox).', schema({
             'path': {'type': 'string', 'maxLength': self.options.path_chars},
             'args': {'type': 'array', 'maxItems': self.options.command_max_args,
                      'items': {'type': 'string', 'maxLength': self.options.command_arg_chars}}}, ['path']), self.run_python, 'execute'),

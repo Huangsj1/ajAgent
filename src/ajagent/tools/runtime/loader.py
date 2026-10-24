@@ -12,7 +12,7 @@ class ToolManager:
         self.selection = ToolConfig.load(config)
         self.stack = ExitStack()
         self.registry = {}
-        self.skills = self.mcp = None
+        self.skills = self.mcp = self.tasks = None
         self.instructions = ''
         self.warnings = []
 
@@ -50,6 +50,7 @@ class ToolManager:
             'delegation': self.delegation,
             'mcp': self.mcp_tools,
             'artifacts': lambda: [runner.artifact_tool()],
+            'tasks': self.task_tools,
         }
         # Load enabled tools in order, and register them with the runner
         for group in self.selection.enabled:
@@ -59,9 +60,22 @@ class ToolManager:
         runner.registry.update(self.registry)
         runner.subagent_slots = Semaphore(options.capabilities.subagent_workers)
         self.instructions += '\nUse available tools only when useful. Cite source URIs/IDs. Search excerpts are not fetched pages.'
-        self.instructions += '\nFor independent read tasks, emit multiple tool calls in one step. Writes execute in order.'
+        self.instructions += '\nFor independent read tasks, emit multiple tool calls in one step. Writes execute in order. Final summaries must use verified results; do not invent numeric details such as exit-code classifications.'
         self.instructions += '\nDelegate independent subtasks with explicit contracts; inspect child proposals before applying them.'
         return self.registry
+
+    def task_tools(self):
+        from ajagent.tasks.plan import TaskOptions
+        from ajagent.tasks.progress import TaskProgress
+        from ajagent.tools.tasks.tracking import task_tools
+        self.tasks = TaskProgress(self.runner, TaskOptions.load(self.config), self.runner.session.task_id)
+        self.stack.callback(self.tasks.close)
+        self.runner.hooks.before_finish.append(self.tasks.before_finish)
+        self.runner.hooks.after_tool.append(self.tasks.observe)
+        self.runner.step_hooks.append(self.tasks.before_step)
+        self.instructions += '\nFor substantial coding tasks, create a durable plan with executable checks. Work on one objective at a time; dynamically delegate independent analysis/drafts. The main agent writes and verifies. Use checkpoint_task between work segments, and verify_task before declaring completion. Checkpoints replace old working context with durable progress, so include precise next actions and evidence paths. If file layout changes, use update_task_paths instead of inventing placeholder files to satisfy obsolete paths. Do not weaken acceptance checks. Once tests pass, verify the objective and move on rather than repeatedly re-reading unchanged files. Initial task state is a snapshot; later task_status/checkpoint data is authoritative.'
+        self.instructions += self.tasks.context()
+        return task_tools(self.tasks)
 
     def database(self):
         from ajagent.tools.database.sqlite import database_tool

@@ -212,3 +212,36 @@ def test_compaction_event_and_total_usage(tmp_path):
     assert result.usage == {'input_tokens': 40, 'output_tokens': 6}
     assert result.last_usage == {'input_tokens': 20, 'output_tokens': 3}
     assert any(e['event'] == 'compacted' for e in events(run))
+
+
+def test_allow_all_covers_different_tools_and_survives_resume(tmp_path):
+    prompts = []
+    def approve(description):
+        prompts.append(description)
+        return 'allow_all'
+    run = runner(tmp_path, [
+        call('write_file', {'path': 'a.py', 'content': 'print(42)\n'}, 'a'),
+        call('write_file', {'path': 'b.txt', 'content': 'hello'}, 'b'),
+        call('run_python', {'path': 'a.py'}, 'c'), final()], ask=approve)
+    assert run.run('Create and execute').status == 'completed'
+    assert len(prompts) == 1
+    assert sum(e['event'] == 'permission_requested' for e in events(run)) == 1
+    assert all(e['decision'] == 'allow' for e in events(run)
+               if e['event'] == 'permission_decided')
+    run.session.flush()
+    resumed = Session(tmp_path / '.ajagent', 'deepseek', 'fake', run.session.id)
+    from ajagent.harness.policy import Policy
+    write = run.registry['write_file']
+    args = {'path': 'new.txt', 'content': 'new'}
+    assert Policy(resumed).decide(write, args, {}) == 'allow'
+    assert Policy(resumed, denied=['write_file']).decide(write, args, {}) == 'deny'
+    fresh = Session(tmp_path / '.ajagent', 'deepseek', 'fake')
+    assert Policy(fresh).decide(write, args, {}) == 'ask'
+
+
+@pytest.mark.parametrize('answer,expected', [('allow_all', 'allow_all'), ('once', 'once'),
+                                           ('session', 'session'), ('no', 'deny')])
+def test_cli_permission_choices(monkeypatch, answer, expected):
+    from ajagent.cli import approve
+    monkeypatch.setattr('builtins.input', lambda _: answer)
+    assert approve({'tool': 'write_file'}) == expected

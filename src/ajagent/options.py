@@ -88,6 +88,7 @@ class RetryOptions:
 
 @dataclass(frozen=True)
 class HarnessOptions:
+    auto_approve_tools: tuple = ()
     max_tool_calls: int = 30
     max_tokens: int = 100000
     max_seconds: float = 300

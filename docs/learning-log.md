@@ -47,3 +47,11 @@ Stage 6 新增 25 项测试；Chromium 本地动态点击、官方 MCP SDK 的�
 实现显式 Handoff、独立角色 Runner、版本化输出和最多两轮 review/revise。与 Stage 6 复用工具调度和分层预算，研究 worker 可并行，writer/reviser 的输出统一由 coordinator 保存。JSON 合同与证据 ID 校验能发现格式与来源错误，但语义正确性仍需审阅，不能被 ID 检查替代。
 
 真实 smoke 暴露了长期问候偏好污染机器可读输出的问题，因此角色只继承项目指令和本次契约，隔离会话偏好。DeepSeek/GPT 完整流程均通过。10 个任务各模式运行 3 次后，多 agent 综合通过 26/30，单 agent 28/30，多 agent 使用约 4.35 倍 token；保留全部失败，不为了展示多 agent 而选择最好样本。小任务默认单 agent，复杂协作的收益需要更大任务集进一步测量。
+
+### Stage 8：任务状态与真实编码迭代
+
+默认主 agent 动态委派，计划和验收是工具，不引入新的固定 workflow。进度状态、检查命令证据和哈希落盘；checkpoint 后换简短工作上下文，原会话保留；用户纠正待审核，文件工具有备份/diff/冲突回滚。
+
+真实 Expense Tracker 项目经历了人为中断、输出截断、预算耗尽、测试文件布局不匹配和反复读取。改进不能只加预算：补具体 schema 错误、保留诊断尾部、保存不完整报告、可调整未完成目标路径及无进展提醒。最终三个目标均 passed，38 个 unittest 与独立黑盒审查通过。年 0 的业务缺陷由独立审查发现后交给 agent 修复；最终口头摘要也曾说错退出码，因此不能只看 agent 的自我汇报。
+
+详细成本与失败轨迹见 experiments/long-task-validation.md。当前上限适合更长任务，但单次试验仍消耗较多 token，Stage 9 应优先测量并减少无效工作。

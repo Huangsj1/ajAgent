@@ -1,6 +1,6 @@
 # ajAgent：学习路线与实施 TODO
 
-资料初次核对日期：2026-10-11；当前状态更新：2026-10-23。Stage 0–7 已实现，Stage 7 完成双厂商真实 workflow smoke 与 60 次单/多 agent 对比。下一阶段为可选 Stage 8 长任务与恢复。
+资料初次核对日期：2026-10-11；当前状态更新：2026-10-23。Stage 0–8 已实现，完整回归 266 项通过。默认主 agent 动态委派，Stage 7 固定 workflow 保留作对照；Stage 8 已完成真实代码项目、中断恢复、独立验收与失败改进。
 
 ## 1. 项目目标与约定
 
@@ -379,15 +379,15 @@ docs/experiments/multi-agent-comparison.md
 
 **验收：** 至少演示一次 review 失败后成功修改；缺证据时不会空转；父级总预算可终止所有节点；最终文档每个引用可追溯。对比报告包含失败样本，不仅展示最好案例。
 
-## 11. Stage 8（选修）— Long-Running Tasks and Feedback
+## 11. Stage 8 — Long-Running Tasks and Feedback（已实现）
 
 **进入条件：** Stage 5 恢复可靠，Stage 7 能给出明确终止结果。参考前述 Anthropic 长任务文章，但采用本地简单实现。
 
-- [ ] S8.1 将大任务拆成可验证 feature/task 列表，保存 pending/running/passed/failed 与验收证据。
-- [ ] S8.2 每个工作段只处理一个小目标，段末保存 progress.md、产物和下一步；新工作段读取事实再继续。
-- [ ] S8.3 增加用户反馈入口，把纠正转换为待审核记忆候选；不自动把模型反思视作正确知识。
-- [ ] S8.4 在演示仓库中为 agent 文件写入保存简单备份/diff；明确文件回滚不等于撤销数据库或外部操作。
-- [ ] S8.5 模拟进程退出后继续，核对已验证任务不重复执行，未验证任务不会被标完成。
+- [x] S8.1 将大任务拆成可验证 feature/task 列表，保存 pending/running/passed/failed 与验收证据。
+- [x] S8.2 每个工作段只处理一个小目标，段末保存 progress.md、产物和下一步；新工作段读取事实再继续。
+- [x] S8.3 增加用户反馈入口，把纠正转换为待审核记忆候选；不自动把模型反思视作正确知识。
+- [x] S8.4 在演示仓库中为 agent 文件写入保存简单备份/diff；明确文件回滚不等于撤销数据库或外部操作。
+- [x] S8.5 模拟进程退出后继续，核对已验证任务不重复执行，未验证任务不会被标完成。
 
 ```text
 src/ajagent/tasks/
@@ -401,7 +401,7 @@ tests/test_long_running.py
 └── checkpoints/
 ```
 
-**验收：** 一个三段任务在第二段中断，恢复后完成剩余工作，最终状态由验证结果决定；不需要常驻服务或自动定时调度。
+**验收已完成：** 子进程与真实模型均完成三段任务在第二段中断后恢复；最终状态由实际检查和文件哈希决定。默认动态委派，不采用固定角色链。38 项示例项目测试与独立黑盒审计通过，完整失败记录和预算调整见 [Stage 8 验证](experiments/long-task-validation.md)。
 
 ## 12. Stage 9（选修）— Evaluation and Optimization
 
@@ -441,4 +441,4 @@ comparisons/README.md
 
 建议从以下范围开始：
 
-> 按 docs/TODO.md 实现可选 Stage 8。先阅读 architecture 和 multi_agent/README.md，保留当前统一配置与共享预算，新增长任务进度、交接与显式恢复；不提前实现 Stage 9 优化。代码使用简洁英文注释，完成边界测试并更新文档。
+> 下一步可选 Stage 9。以 Stage 8 的真实失败轨迹为基线，测量重复读取、测试定位和上下文交接成本；默认保留主 agent 动态委派，不把固定角色链作为主流程。先形成可比较指标再优化，不以放宽测试或无限提高预算代替改进。

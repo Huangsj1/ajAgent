@@ -20,3 +20,7 @@ dist/
 # Generated knowledge index (source documents remain tracked).
 knowledge/.index/
 
+
+# Databases produced by the agent-authored coding exercise.
+examples/*
+!examples/minimal_agent.py

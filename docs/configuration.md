@@ -1,142 +1,50 @@
-# 配置与模块边界
+# 配置目录
 
-```mermaid
-flowchart TD
-    T[config.local.toml] --> R[read_config: 读取一次]
-    R --> C[Settings: runtime 与厂商]
-    R --> O[Options: 不可变的配置分组]
-    R --> G[RagSettings: 检索开关与路径]
-    C --> CLI[CLI 组合运行组件]
-    O --> CLI
-    G --> CLI
-    CLI --> H[Runner / Budget / Hooks]
-    CLI --> X[ContextBuilder / Session / Memory]
-    CLI --> W[Workspace / Execution / SQLite]
-    CLI --> S[RetrievalService / 各检索后端]
-    H --> P[prepare: 唯一参数校验入口]
-    P --> I[invoke: 执行已校验参数]
+默认入口是 `config/config.local.toml`，`--config` 可以指定其他入口，原来的单文件 TOML 也仍然支持。
+
+首次使用时，在项目根目录运行（不覆盖已有本地文件）：
+
+```sh
+for file in config/*.example.toml; do
+  local_file="${file%.example.toml}.local.toml"
+  if [ ! -e "$local_file" ]; then cp "$file" "$local_file"; fi
+done
 ```
 
-可调默认值集中在 `src/ajagent/options.py`，使用按职责分组的 dataclass。`DEFAULTS` 是不可变的默认对象，实例通过显式参数接收配置；不同运行不会修改彼此的默认值。模型、路径、厂商凭据及 RAG 开关沿用原有配置结构。
+| 文件（均提供 `.example.toml` 模板和被 Git 忽略的 `.local.toml` 本地版） | 职责 |
+| --- | --- |
+| `config` | `include` 文件列表，无业务配置 |
+| `runtime` | 运行参数、上下文、记忆、模型重试 |
+| `models` | DeepSeek / OpenAI 模型与 API key |
+| `tools` | 工具组开关、skills/MCP 路径、工具限额、委派与并发参数 |
+| `rag` | 知识库、索引、embedding/reranker、检索限额和 Tavily key |
+| `tasks` | 持久化计划上限、检查点上下文刷新、无进展提醒 |
+| `coordination` | 协作默认开关、角色提示词路径、角色模型/工具裁剪、节点重试与修订上限 |
+| `harness` | 执行预算、artifact、日志、验证与拒绝列表 |
+| `mcp` | 独立的 server 清单，由 MCPManager 按需加载 |
 
-主 CLI 组合加载一次入口及其 TOML 分片，将同一份配置传给 `load_config` 和 `RagSettings.load`；独立的 RAG、memory CLI 各自读取用户指定的配置。没有引入全局可变配置单例。命令行的既有覆盖项继续优先，runtime 的环境变量优先级保持原规则。
+入口模板已引用 local 分片，复制上述全部模板后即可使用；仅复制入口文件会因缺失分片而报错。
 
-## 配置文件
+加载顺序：按 `include` 顺序递归合并表，然后应用入口本身的值；相同字段后者覆盖前者，数组整体替换。缺失的 include、错误类型或循环引用会报错。省略的业务参数使用代码默认值。MCP 文件不是普通配置分片，不写入 include。
 
-配置现已拆分到 `config/`。入口 `config/config.local.toml` 的 include 加载 runtime、models、tools、rag、harness、coordination 分片；MCP 按需单独加载 `config/mcp.local.toml`。完整文件映射、初始化和路径规则见 [配置目录](../config/README.md)。
+include 路径相对声明它的文件；业务路径（RAG、skills、mcp_config）始终相对最外层入口文件，分片位置不改变含义。例如 `../knowledge` 指项目根目录的知识库。`runtime.workspace` 仍相对命令工作目录，CLI 的路径覆盖保持原语义。MCP server 的 cwd 则相对 MCP 配置文件；测试示例使用 `cwd = ".."`。
 
-## 配置分组
+所有 `*.local.toml` 都被 Git 忽略并被文件工具排除。只在 local 文件填写凭据，不要填写 example 文件。修改一类配置只需编辑相应 local 分片。
 
-| TOML 小节 | 主要内容 | 消费模块 |
-| --- | --- | --- |
-| `[runtime]` | provider、workspace、步数、请求/工具超时、输出字符预算、context/output token 预算、memory 开关 | config、CLI、loop、模型 |
-| `[deepseek]` / `[openai]` | API key、模型、endpoint、协议模式 | 模型适配器 |
-| `[harness]` | 工具/token/时间预算、修订轮数、artifact 阈值/预览/读取长度、日志摘要长度、拒绝列表、验证命令 | Runner、Budget、Hooks |
-| `[limits.tools]` | 文件大小、扫描数量、读行数、写入/diff 长度、命令参数/输出限额与允许命令、SQLite 上限 | Workspace、Execution、SQLite、Local Search |
-| `[limits.context]` | 工具摘录长度、保留批次数、摘要请求余量、token 估算系数、重复调用上限 | ContextBuilder、loop、模型观测器 |
-| `[limits.memory]` | 记忆条数、文本/来源长度、session 写入缓冲大小 | Memory、Session |
-| `[limits.retry]` | 模型 HTTP 重试次数与退避基数 | HTTPModel；不影响 Tavily 的单次请求策略 |
-| `[rag]` | 检索开关、来源、候选数、知识库/索引/缓存路径、rerank、device | RagSettings、检索服务 |
-| `[limits.retrieval]` | query/result 上限、RRF、rg 批量、chunk、HNSW、embedding/reranker 批量及长度 | 检索后端与知识库接口 |
-| `[tavily]` | API key、超时、search_depth、内容截断长度 | Tavily SDK 适配器 |
+默认保持主 agent 动态委派，coordination.enabled=false。长任务的工具开关在 tools.local.toml，状态配置在 tasks.local.toml，运行预算在 runtime/harness 分片；auto_approve_tools 只自动批准明确列出的工具，deny 始终优先。
 
-`config/*.example.toml` 分组列出当前可调项；对应的 `*.local.toml` 保留本地配置与凭据。省略可调项时使用代码中的统一默认值。修改未知字段、使用无效类型/负数或不一致的上下限会在加载时报错。
+## Stage 8 长任务工具
 
-例如，只需要调整以下项目时可以写：
+`tasks` 工具组统一加载 plan_tasks、task_status、start_task、update_task_paths、checkpoint_task 和 verify_task，业务状态在 `ajagent/tasks/`。子 agent 默认不获得这些工具；主 agent 动态委派分析与草稿并负责验收。execution 增加 restore_file；write_file/apply_proposal 经过 files/history.py 保存备份和 diff，回滚受哈希冲突检查约束。
 
-```toml
-[limits.tools]
-max_file_bytes = 2000000
-max_scan_files = 2000
-command_output_bytes = 16000
+工具参数错误现在返回字段与 schema 约束，不回显参数值。长命令输出保留头尾，避免 unittest 失败摘要被头部日志挤掉；超长结果的 artifact 预览也为命令保留尾部。被模型输出上限截断的报告保留 partial 文本，不执行截断工具调用。
 
-[limits.context]
-tool_excerpt_chars = 1500
-recent_groups = 3
+## Stage 8 长任务与执行预算
 
-[limits.memory]
-max_entries = 30
-session_buffer_bytes = 131072
+tasks 分片控制可恢复计划、检查点上下文切换（compact_on_checkpoint）、目标数量与长时间未更新的提醒（max_idle_steps）。默认工具组含 tasks；固定 coordination workflow 默认关闭。恢复同一 task 时读取状态和文件哈希，pending 副作用的检查沿用上一 run。
 
-[limits.retrieval]
-embedding_batch = 4
-reranker_batch = 2
-```
+runtime/harness 模板和本地配置已调整到：100 steps、300 次工具调用、200 万 token、1800 秒；单请求输出 8192 token；工具超时 30 秒。capabilities 子任务限额为 16 steps / 30 calls / 100000 token / 300 秒，并计入父预算。artifact_read_chars=8000，工具输出上限=12000，以减少反复分页。API request timeout=60 秒。
 
-配置是覆盖层，不必复制全部默认项。`[rag].candidates` 是粗召回候选数的唯一配置入口，不能大于 `limits.retrieval.rerank_candidates`。`default_results` 不能大于 `result_limit`，后者不能大于 `backend_limit`。默认读行数、SQL 默认行数也不能超过相应最大值。
+[harness].auto_approve_tools 默认只包含 plan_tasks、update_task_paths、start_task、checkpoint_task、verify_task。真正的 run_command / write_file 等仍走权限，deny 优先。示例编码试验使用单独的 ignored config/long-task-demo.local.toml，workspace 限定为 examples/projects/expense_tracker，并显式授权该试验需要的副作用；不更改主配置的执行授权。
 
-独立记忆 CLI 支持：
-
-```bash
-uv run ajagent-memory --config config/config.local.toml --workspace /path/to/project list
-```
-
-程序调用可以使用 `Options.from_config(read_config(path))`，然后将 `options.tools`、`options.context` 等传给相应构造器。`Runner(..., options=options)` 使用其中的 harness 设置；已注入的 workspace/session/builder 仍由调用者按对应配置创建。知识库 `update_knowledge/open_knowledge` 接收 `options=`，省略时读取 `config_path`。
-
-## 索引兼容性
-
-默认参数未变，现有索引仍可打开。改变 chunk 大小、HNSW 建立参数、embedding 维度或截断长度会改变索引兼容性标识；程序会拒绝混用并提示选择新的索引目录。改变 embedding/reranker 的批量大小不要求重建索引。改变 HNSW 查询 ef 只影响查询，不改变已建立的图。
-
-HNSW 建立参数改变后，请用一个新的输出目录重新执行 index，再用 `[rag].index` 选择新索引。程序不会自动删除旧索引。
-
-## 明确的职责边界
-
-- `tools/common/registry.py`：`prepare` 只解析/校验一次；`invoke` 只执行已校验参数并转换异常。普通 `execute` 和 Runner 复用这两个入口。
-- `harness/model.py`：记录模型事件与用量、临时附加当前预算；不修改共享 Settings 的 timeout。
-- `models/base.py`：唯一负责 HTTP 重试、退避、请求超时和剩余时间的组合。
-- `memory/session.py`：`finish` 统一保存 session 累计用量快照；正常、取消、预算耗尽共用相同结束记录格式。
-- `core/loop.py`：仍是唯一推理循环，保留模型/工具批次和验证反馈；Runner 不复制循环。
-- `cli.py`：解析参数、展示输出和组合组件，交互回调与配置读取分开。
-
-大工具结果由 Runner 写入 artifact，进入 loop 时再按本次输出预算序列化。预览被进一步缩短时保留 artifact 读取路径；过长的错误消息也会有界截断，避免序列化无法结束。session 的原始记录不会因为输入裁剪而覆盖。
-
-不是所有数字都应成为参数：HTTP 状态码、协议字段、JSON 缩进、数组索引、算法计数和模型固定 revision 属于实现或兼容性约定。Tavily 最大返回条数、Qwen 维度边界等保留为明确命名的协议常量，不作为任意可调项。Stage 1 的独立最小示例保留其教学结构，不依赖完整配置框架。
-
-## 统一工具配置
-
-所有工具组只由 `[tools]` 开关控制；配置与完整范例见 [Tools README](../src/ajagent/tools/README.md)。
-
-```toml
-[tools]
-enabled = ["files", "database", "execution", "web", "skills", "delegation", "artifacts"]
-disabled = []
-skills_path = "../skills"
-mcp_config = "mcp.local.toml"
-```
-
-可追加的工具组为 `retrieval`、`browser`、`mcp`。`disabled` 排除具体工具名，也传递到子任务。所有能力参数与启用状态分开：RAG 参数继续在 `[rag]`，MCP server 参数放单独的 `config/mcp.local.toml`，超时/大小/并行数放 `[limits.capabilities]`。
-
-原 `--rag`、`--rag-*`、`--browser`、`--mcp-demo` 和 `[rag].enabled` 已移除。迁移方式：在 enabled 添加相应组；RAG 路径写 `[rag].index/local_path`，来源写 `[rag].sources`；`limits.extensions` 改名为 `limits.capabilities`。本项目 example/local 配置已迁移，密钥与模型选择保留。独立的知识库构建 CLI 参数不变。
-
-| 能力参数 | 默认 | 含义 |
-| --- | --- | --- |
-| fetch_timeout / fetch_bytes | 15 秒 / 2000000 字节 | 网页抓取限制 |
-| text_chars / url_chars | 12000 / 2000 | 正文和 URL/selector 上限 |
-| browser_timeout | 10 秒 | 页面操作超时 |
-| skill_bytes / skill_metadata_chars | 32000 / 1000 | skill 正文和 metadata 上限 |
-| read_workers / subagent_workers | 4 / 3 | 只读批次、并行子任务上限 |
-| child_steps / child_tool_calls | 5 / 10 | 子任务独立步数、工具上限 |
-| child_tokens / child_seconds | 30000 / 120 秒 | 子任务预算，同时受父级约束 |
-| task_chars / summary_chars | 8000 / 4000 | contract 文本字段、返回摘要上限 |
-| max_proposals | 10 | 单子任务提案上限 |
-| researcher_tools / reviewer_tools | 见模板 | 子任务可继承的只读工具名 |
-| mcp_timeout | 10 秒 | MCP server 未覆盖 timeout 时的默认超时 |
-
-MCP 完整配置、持久连接及 HTTP 认证说明见 [MCP README](../src/ajagent/tools/mcp/README.md)。模型不能通过工具启用新 server；配置启用本地 server 表示允许启动该程序，具体工具仍按 read/execute 策略处理。
-
-浏览器仍为可选依赖；加入 enabled 后使用同一浏览器安装路径：
-
-```bash
-uv sync --all-extras
-export PLAYWRIGHT_BROWSERS_PATH=0
-uv run --all-extras playwright install chromium
-uv run --all-extras ajagent '打开本地演示网页并读取正文'
-```
-
-本次 Chromium 安装在 .venv 内。也可以使用 Playwright 默认用户缓存，但安装和运行应保持一致。运行时保留需要的 extras，避免 uv 移除未选中的可选依赖。
-
-## Stage 7 协作配置
-
-`config/coordination.local.toml` 控制是否默认启用 research workflow、角色模型/工具、节点步数以及最多一次节点重试、最多两轮修订。`--workflow single|research` 只覆盖本次任务模式。各角色工具与 `[tools].enabled` 求交集，不能绕过主工具开关和 deny 列表。默认同模型，可对角色配置 provider/model。
-
-角色使用项目指令和显式 Handoff，不继承主会话聊天历史与长期偏好。父级 harness 的 token/工具/时间预算覆盖所有角色和研究 worker。角色没有 workspace 写工具，由 coordinator 保存版本化产物。完整配置语义见 [多 agent README](../src/ajagent/multi_agent/README.md)。
+交互审批可输入 `once`（仅本次）、`session`（当前会话内相同权限范围）、`allow_all`（当前会话所有工具）或 `no`（拒绝）。选择 `allow_all` 后，后续 write/execute 不再逐个询问；授权随会话保存，`--resume` 时继续生效，新会话不继承。显式 deny、workspace 限制、hooks 和执行预算仍然有效。

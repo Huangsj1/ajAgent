@@ -40,8 +40,8 @@ def trace(step, call, result):
 
 def approve(description):
     print(json.dumps(description, ensure_ascii=False, indent=2))
-    answer = input('Allow? [once/session/no]: ').strip().lower()
-    return answer if answer in {'once', 'session'} else 'deny'
+    answer = input('Allow? [once/session/allow_all (all tools in this session)/no]: ').strip().lower()
+    return answer if answer in {'once', 'session', 'allow_all'} else 'deny'
 
 
 def supplement(step):
@@ -51,6 +51,7 @@ def supplement(step):
 def build_parser():
     parser = argparse.ArgumentParser(description="A small agent with a permission-aware execution harness")
     parser.add_argument("prompt")
+    parser.add_argument("--task", help="Continue a durable task with fresh context")
     parser.add_argument("--workflow", choices=["single", "research"], help="Override the configured workflow")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--provider", choices=["deepseek", "openai"])
@@ -80,7 +81,7 @@ def main():
         options = settings.options
         coordination = CoordinationOptions.load(config)
         coordinated = args.workflow == "research" or (args.workflow is None and coordination.enabled)
-        if coordinated and args.resume:
+        if coordinated and (args.resume or args.task):
             raise ValueError("Workflow resume is not supported; start a new coordinated task")
         registry = {}
         system_prompt = SYSTEM
@@ -91,6 +92,10 @@ def main():
         if settings.memory:
             system_prompt += Memory(settings.workspace / '.ajagent', options.memory).context()
         session = Session(settings.workspace / '.ajagent', settings.provider, settings.model, args.resume, options.memory)
+        if args.task:
+            if args.resume and session.task_id != args.task:
+                raise ValueError("Task ID conflicts with resumed session")
+            session.task_id = args.task
         builder = ContextBuilder(settings.context_tokens, settings.output_tokens, options.context)
         builder.summary = session.checkpoint.get('summary', '')
         builder.covered = session.checkpoint.get('summarized_groups', 0)
@@ -120,6 +125,8 @@ def main():
                             denied=args.deny_tool, supplement=supplement if args.interactive else None,
                             loop=run_agent, options=options)
             tool_manager = stack.enter_context(ToolManager(settings, config, runner, client))
+            if session.task_id and tool_manager.tasks is None:
+                raise ValueError("Enable tasks to continue a durable task")
             system_prompt += tool_manager.instructions
             prompt = tool_manager.prompt(args.prompt)   # expand skills
             print('Tools: ' + ', '.join(runner.registry))
@@ -137,6 +144,8 @@ def main():
                 result = runner.run(prompt, max_steps=settings.max_steps,
                                     max_output_chars=settings.max_output_chars, on_tool=trace,
                                     system_prompt=system_prompt, acknowledge_unknown=args.acknowledge_unknown)
+        if tool_manager.tasks and tool_manager.tasks.data:
+            print(f"Task: {tool_manager.tasks.data['id']} | Progress: {tool_manager.tasks.directory / 'progress.md'}")
         print(f'Harness: {runner.state.status} | Reason: {runner.state.reason}')
         if coordinated:
             print(f'Workflow nodes: {result.steps}')

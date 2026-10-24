@@ -9,6 +9,11 @@ flowchart TD
     N --> L
     CO --> A[版本化产物 / final 或 partial]
     R --> L[run_agent: 唯一循环]
+    R --> TP[TaskProgress: 计划 / 验收 / 持久化进度]
+    TP --> HC[检查点更新工作上下文]
+    HC --> L
+    TP --> TR[新会话按 task ID 恢复]
+    TR --> R
     L --> C[Context builder / 必要时摘要]
     C --> M[DeepSeek / GPT]
     M --> D{输出}
@@ -316,3 +321,11 @@ Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模
 只有研究角色可显式复用 Stage 6 的并行 delegate，worker 不继续委派；权限和费用向父级传播。writer/reviser 将文稿作为结构化输出返回，由 coordinator 保存 draft-vN，reviewer 不直接写稿。research 的实际来源 ID 和有界观察内容保存在 evidence.json，所有角色通过有限 Handoff 交流，不共享聊天历史。最终 Sources 表给出引用定位；语义支持仍由 reviewer 检查，不能将 ID 有效等同于事实正确。
 
 失败、取消和预算耗尽保留已有产物；未通过审阅不会创建 final.md。workflow 续跑留给 Stage 8。模块与流程细节见 [multi_agent README](../src/ajagent/multi_agent/README.md)，真实收益/成本见 [对比报告](experiments/multi-agent-comparison.md)。
+
+## Stage 8：动态主 agent 的持久化任务
+
+默认仍是 Runner + run_agent，按需 delegate；不切换为 Stage 7 固定角色链。`tasks/progress.py` 管理 pending/running/passed/failed 和一个活动目标，verify_task 通过既有 Runner 执行声明的 argv 检查，保存 exit code、run/call ID 与产物哈希。变动的已通过文件退回 pending。文件布局变化可记录原因并更新未完成路径，不能直接重写验收条件或伪造 passed。
+
+每段 checkpoint 或验收通过后，下一个完整批次边界使用任务事实替换旧工作上下文；session 完整历史和累计 token 保留。任务保存上一 run ID，fresh session 的 --task 仍检查未知副作用。进程级 flock 防止两个主 agent 同时修改同一任务。`tasks/feedback.py` 的用户纠正候选由 CLI 显式审核后才写 Memory。
+
+`tools/files/history.py` 保存 before.bin/change.diff/前后哈希，文件写入原子替换，restore_file 拒绝覆盖后来编辑。命令/数据库副作用没有通用回滚。命令输出和 artifact 预览保留诊断尾部；结构校验返回具体参数约束；截断模型输出保留不完整文字但不执行部分工具请求。模块与使用说明见 [tasks README](../src/ajagent/tasks/README.md)。

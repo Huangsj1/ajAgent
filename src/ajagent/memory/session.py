@@ -20,6 +20,7 @@ class Session:
         self.clean = lambda value: value
         self.grants = set()     # granted permission keys
         self.run_id = None
+        self.task_id = None
         self.groups = []
         self.checkpoint = {}
         self.usage = {"input_tokens": 0, "output_tokens": 0}
@@ -28,6 +29,7 @@ class Session:
             events = [json.loads(line) for line in self.path.read_text().splitlines()]
             if events[0] != {'event': 'session', 'provider': provider, 'model': model}:
                 raise ValueError('Resume requires the original provider and model')
+            self.task_id = next((e['task_id'] for e in reversed(events) if e['event'] == 'task_bound'), None)
             self.grants = {e['key'] for e in events if e['event'] == 'permission_granted'}
             self.run_id = next((e['run_id'] for e in reversed(events) if e['event'] == 'harness_run'), None)
             # get the last context event

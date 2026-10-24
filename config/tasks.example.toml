@@ -1,0 +1,7 @@
+[tasks]
+compact_on_checkpoint = true
+max_idle_steps = 12
+max_tasks = 20
+text_chars = 8000
+max_checks = 5
+max_paths = 50
