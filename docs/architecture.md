@@ -8,6 +8,8 @@ flowchart TD
     CO --> N[research → write → review → revise 独立 Runner]
     N --> L
     CO --> A[版本化产物 / final 或 partial]
+    R --> BM[Budget: HIGH / LOW / FINALIZING]
+    BM --> BF[有界无工具收尾 / 硬限制]
     R --> L[run_agent: 唯一循环]
     R --> TP[TaskProgress: 计划 / 验收 / 持久化进度]
     TP --> HC[检查点更新工作上下文]
@@ -329,3 +331,5 @@ Session total usage 仍从上一次 end 快照累计。Runner 观测全部主模
 每段 checkpoint 或验收通过后，下一个完整批次边界使用任务事实替换旧工作上下文；session 完整历史和累计 token 保留。任务保存上一 run ID，fresh session 的 --task 仍检查未知副作用。进程级 flock 防止两个主 agent 同时修改同一任务。`tasks/feedback.py` 的用户纠正候选由 CLI 显式审核后才写 Memory。
 
 `tools/files/history.py` 保存 before.bin/change.diff/前后哈希，文件写入原子替换，restore_file 拒绝覆盖后来编辑。命令/数据库副作用没有通用回滚。命令输出和 artifact 预览保留诊断尾部；结构校验返回具体参数约束；截断模型输出保留不完整文字但不执行部分工具请求。模块与使用说明见 [tasks README](../src/ajagent/tasks/README.md)。
+
+预算的统一计费、阶段转换、收尾协议和真实编码对比见 [Budget Manager](budget-management.md)。

@@ -7,7 +7,7 @@ class DeepSeekModel(HTTPModel):
     path = "/chat/completions"
 
     def payload(self, context, tools):
-        return {"model": self.settings.model, "max_tokens": self.settings.output_tokens, "messages": context, "stream": False,
+        return {"model": self.settings.model, "max_tokens": (getattr(self, 'request_output_tokens', None) or self.settings.output_tokens), "messages": context, "stream": False,
                 "thinking": {"type": self.settings.thinking},
                 "tools": [{"type": "function", "function": tool.definition()} for tool in tools]}
 

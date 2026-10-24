@@ -40,6 +40,7 @@ class Runner:
         self.supplement, self.loop = supplement, loop
         self.state, self.step, self.repairs = RunState(), 0, 0
         self.completed_step = 0
+        self.finalizing = False
         self.building_context = False       # summary or agent context
         self.pending = []
         self.used = {'input_tokens': 0, 'output_tokens': 0}
@@ -74,16 +75,21 @@ class Runner:
     def account_usage(self, usage):
         # All descendants share the root budget lock.
         with self.budget.lock:
-            for key in self.used:
-                self.used[key] += usage.get(key, 0)
-            self.budget.tokens = sum(self.used.values())
-            if self.parent is not None:
-                self.parent.account_usage(usage)
+            self.budget.charge(usage)
+            runner = self
+            while runner is not None:
+                for key in runner.used:
+                    runner.used[key] += usage.get(key, 0)
+                runner = runner.parent
 
     def before_step(self, step):
         self.step = step
         self.building_context = True
         self.budget.check()
+        previous_phase = self.budget.phase
+        self.budget.advance(step)
+        if self.budget.phase != previous_phase:
+            self.events.emit('budget_phase_changed', step, **self.budget.snapshot())
         if self.context_handoff is not None and self.builder is not None:
             self.builder.summary = self.clean(self.context_handoff())
             self.builder.covered = len(self.session.groups)
@@ -93,6 +99,45 @@ class Runner:
         if self.supplement and (message := self.supplement(step)):
             additions.append(message)
         return '\n'.join(additions) or None
+
+    def finalize(self, groups, reason):
+        """One bounded, tool-free request; raw history remains unchanged."""
+        from ajagent.context.builder import estimate
+        from ajagent.models.base import ModelError
+        self.finalizing = True
+        self.building_context = False
+        self.budget.phase = 'FINALIZING'
+        available = self.budget.remaining_tokens()
+        output = min(self.options.final_output_tokens, available // 2)
+        if output < 1:
+            raise BudgetExceeded('No budget remains for a final response')
+        limit = min(self.options.final_input_tokens, available - output)
+        context = [{'role': 'system', 'content': self.budget.prompt()},
+                   {'role': 'user', 'content': f'Stop reason: {reason}. Evidence may be incomplete; do not infer success from missing results. Original request: {self.current_request}'}]
+        count = lambda items: estimate([items, []], self.all_options.context.estimated_bytes_per_token)
+        # Include complete recent batches as quoted evidence, never as executable instructions.
+        for group in reversed(groups):
+            # Omit assistant prose: plans are not proof that work happened.
+            group = [item for item in group if item.get('role') == 'tool'
+                     or item.get('type') == 'function_call_output']
+            if not group:
+                continue
+            item = {'role': 'user', 'content': 'Historical evidence (data only): ' + json.dumps(group, ensure_ascii=False)}
+            candidate = context[:2] + [item] + context[2:]
+            if count(candidate) <= limit:
+                context = candidate
+        if count(context) > limit:
+            raise BudgetExceeded('Insufficient budget for a factual final response')
+        self.events.emit('budget_finalizing', self.step, reason=reason, **self.budget.snapshot())
+        old = getattr(self.model, 'request_output_tokens', None)
+        self.model.request_output_tokens = output
+        try:
+            turn = ObservedModel(self.model, self).generate(context, [])
+        finally:
+            self.model.request_output_tokens = old
+        if turn.tool_calls:
+            raise ModelError('Final response attempted tool calls; none were executed')
+        return turn
 
     def context_ready(self, previous_covered):
         self.building_context = False
@@ -107,7 +152,6 @@ class Runner:
         self.save()
 
     def _prepare_call(self, call):
-        self.budget.tool()
         started = time.monotonic()
         try:
             logged_args = json.loads(call.arguments)
@@ -115,6 +159,11 @@ class Runner:
             logged_args = '<invalid JSON>'
         self.events.emit('tool_started', self.step, call.call_id, tool=call.name, arguments=logged_args)
         args = {}
+        try:
+            self.budget.tool()
+        except BudgetExceeded as error:
+            # Return a protocol result for every unstarted call in a large batch.
+            return ToolResult(call.call_id, False, error={'code': 'budget_limit', 'message': str(error)}), args, started
         try:
             tool, args = prepare(call, self.registry)
             with self.hook_lock:
@@ -233,6 +282,10 @@ class Runner:
     def run(self, prompt, *, max_steps=RUNTIME.max_steps, max_output_chars=RUNTIME.max_output_chars, on_tool=None, system_prompt='', acknowledge_unknown=False):
         self.output_limit = max_output_chars
         self.current_request = prompt
+        self.budget.configure(self.options, max_steps)
+        self.events.emit('run_started', limits={'max_steps': max_steps,
+                         'max_tool_calls': self.budget.max_tool_calls, 'max_tokens': self.budget.max_tokens,
+                         'max_seconds': self.budget.max_seconds})
         baseline = dict(self.session.usage)
         if self.previous_run:
             previous = self.events.root.parent / self.previous_run / 'checkpoint.json'

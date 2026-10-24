@@ -1,4 +1,11 @@
 [harness]
+# Remaining fractions trigger focus and a tool-free final handoff.
+final_step_reserve = 1
+repeat_window = 12
+low_budget_ratio = 0.35
+finalizing_ratio = 0.10
+final_input_tokens = 16384
+final_output_tokens = 8192
 max_repairs = 2
 artifact_threshold_chars = 12000
 artifact_preview_chars = 3000
@@ -7,9 +14,9 @@ artifact_max_offset = 10000000
 model_log_chars = 500
 tool_log_chars = 2000
 validation_feedback_chars = 2000
-max_tool_calls = 300
-max_tokens = 3000000
-max_seconds = 1800
+max_tool_calls = 900
+max_tokens = 6000000
+max_seconds = 3600
 deny_tools = []
 validation_command = []
 

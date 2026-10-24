@@ -7,7 +7,7 @@ import tomllib
 
 @dataclass(frozen=True)
 class RuntimeDefaults:
-    max_steps: int = 8
+    max_steps: int = 300
     timeout: float = 30
     tool_timeout: float = 5
     max_output_chars: int = 6000
@@ -88,10 +88,16 @@ class RetryOptions:
 
 @dataclass(frozen=True)
 class HarnessOptions:
+    final_step_reserve: int = 1
+    repeat_window: int = 12
+    low_budget_ratio: float = 0.35
+    finalizing_ratio: float = 0.10
+    final_input_tokens: int = 4096
+    final_output_tokens: int = 1024
     auto_approve_tools: tuple = ()
-    max_tool_calls: int = 30
-    max_tokens: int = 100000
-    max_seconds: float = 300
+    max_tool_calls: int = 900
+    max_tokens: int = 6000000
+    max_seconds: float = 3600
     max_repairs: int = 2
     artifact_threshold_chars: int = 6000
     artifact_preview_chars: int = 1500
@@ -204,6 +210,8 @@ class Options:
             raise ValueError('Embedding dimensions must be between 32 and 1024')
         if result.retrieval.hnsw_m < 2:
             raise ValueError('HNSW M must be at least 2')
+        if not 0 < result.harness.finalizing_ratio < result.harness.low_budget_ratio < 1:
+            raise ValueError('Require 0 < finalizing_ratio < low_budget_ratio < 1')
         if result.harness.artifact_preview_chars >= result.harness.artifact_threshold_chars:
             raise ValueError('Artifact preview must be smaller than its threshold')
         return result

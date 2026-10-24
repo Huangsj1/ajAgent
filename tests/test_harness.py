@@ -245,3 +245,21 @@ def test_cli_permission_choices(monkeypatch, answer, expected):
     from ajagent.cli import approve
     monkeypatch.setattr('builtins.input', lambda _: answer)
     assert approve({'tool': 'write_file'}) == expected
+
+
+def test_model_error_diagnostics_persist_in_run_and_session(tmp_path):
+    from ajagent.models.base import ModelError
+    class Broken:
+        def generate(self, context, tools):
+            raise ModelError('HTTP 402: billing unavailable', kind='billing_error',
+                             status=402, attempts=1, request_id='req-test')
+    run = runner(tmp_path, [])
+    run.model = Broken()
+    result = run.run('Work')
+    assert result.status == 'api_error'
+    assert result.answer == 'HTTP 402: billing unavailable'
+    event = next(e for e in events(run) if e.get('error') == 'ModelError')
+    assert event['error_details']['http_status'] == 402
+    session_events = [json.loads(line) for line in run.session.path.read_text().splitlines()]
+    failure = next(e for e in session_events if e['event'] == 'model_error')
+    assert failure['kind'] == 'billing_error' and failure['request_id'] == 'req-test'

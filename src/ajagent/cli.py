@@ -134,6 +134,8 @@ def main():
                 print('Tool warning: ' + warning)
             session.append({'event': 'system', 'content': system_prompt})
             print(f'Run: {runner.events.id}')
+            print(f'Budget: steps={settings.max_steps}, tools={runner.budget.max_tool_calls}, '
+                  f'tokens={runner.budget.max_tokens}, seconds={runner.budget.max_seconds:g}')
             print('[Running Agent]...')
             if coordinated:
                 runner.output_limit = settings.max_output_chars
@@ -147,6 +149,8 @@ def main():
         if tool_manager.tasks and tool_manager.tasks.data:
             print(f"Task: {tool_manager.tasks.data['id']} | Progress: {tool_manager.tasks.directory / 'progress.md'}")
         print(f'Harness: {runner.state.status} | Reason: {runner.state.reason}')
+        if runner.budget.phase_reason:
+            print(f'Budget phase: {runner.budget.phase} | Trigger: {runner.budget.phase_reason}')
         if coordinated:
             print(f'Workflow nodes: {result.steps}')
         else:

@@ -2,6 +2,8 @@
 import time
 from ajagent.context.builder import estimate
 from ajagent.options import DEFAULTS
+from ajagent.models.base import ModelError
+from ajagent.harness.budget import FinalizeRequired
 
 
 class ObservedModel:
@@ -13,10 +15,22 @@ class ObservedModel:
 
     def generate(self, context, tools):
         runner = self.runner
-        reserve = getattr(getattr(self.model, 'settings', None), 'output_tokens', 0)
+        reserve = getattr(self.model, 'request_output_tokens', None) or getattr(getattr(self.model, 'settings', None), 'output_tokens', 0)
         # 1. Check the budget
         estimate_tokens = estimate([context, [t.definition() for t in tools]],
                                    getattr(runner.builder, 'options', DEFAULTS.context).estimated_bytes_per_token) + reserve
+        if not runner.finalizing:
+            previous = runner.budget.phase
+            phase = runner.budget.advance(request_tokens=estimate_tokens)
+            if phase != previous:
+                runner.events.emit('budget_phase_changed', runner.step, **runner.budget.snapshot())
+            if phase == 'FINALIZING':
+                raise FinalizeRequired
+            if phase != previous and context and context[0].get('role') == 'system':
+                context = [dict(context[0]), *context[1:]]
+                context[0]['content'] = context[0]['content'].split('\nBudget phase:')[0] + '\n' + runner.budget.prompt()
+                estimate_tokens = estimate([context, [t.definition() for t in tools]],
+                                           runner.all_options.context.estimated_bytes_per_token) + reserve
         started = time.monotonic()
         runner.events.emit('model_started', runner.step, purpose='summary' if runner.building_context else 'agent')
         with runner.budget.request(estimate_tokens) as settle:
@@ -26,7 +40,11 @@ class ObservedModel:
                 turn = self.model.generate(context, tools)
                 settle(lambda: runner.account_usage(turn.usage))
             except BaseException as error:
-                runner.events.emit('model_finished', runner.step, error=type(error).__name__,
+                details = runner.clean(error.details) if isinstance(error, ModelError) else None
+                if details is not None:
+                    runner.session.append({'event': 'model_error', 'step': runner.step, **details})
+                    runner.session.flush()
+                runner.events.emit('model_finished', runner.step, error=type(error).__name__, error_details=details,
                                    elapsed=time.monotonic() - started)
                 raise
             finally:

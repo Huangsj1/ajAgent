@@ -3,6 +3,7 @@ import difflib
 import os
 import selectors
 import signal
+import shutil
 import subprocess
 import time
 import sys
@@ -15,6 +16,8 @@ def command(argv, cwd, timeout=RUNTIME.tool_timeout, output_limit=None, options=
     output_limit = options.command_output_bytes if output_limit is None else output_limit
     if not argv or (argv[0] not in options.allowed_commands and not (python_script and argv[0] == sys.executable)):
         raise ToolError('forbidden', 'Allowed executables: ' + ', '.join(options.allowed_commands))
+    if shutil.which(argv[0]) is None:
+        raise ToolError('executable_not_found', f'Executable {argv[0]} is not on PATH; use another available tool or install it.')
     # No shell; descendants share a process group for cancellation and timeout.
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE if separate else subprocess.STDOUT,
                                start_new_session=True)

@@ -55,3 +55,5 @@ uv run ajagent --task TASK_ID '根据已保存进度继续完成'
 配置与反馈审核见 [长任务说明](src/ajagent/tasks/README.md)。当前运行模板上限：100 steps / 300 工具调用 / 200 万 token / 30 分钟；检查点会刷新工作上下文以减少重复历史。默认不自动批准命令和工作区写入，专用无人值守配置可通过 harness.auto_approve_tools 明确授权。
 
 真实编码试验与改进见 [Stage 8 验证](docs/experiments/long-task-validation.md)，产物为 [Expense Tracker](examples/projects/expense_tracker/README.md)。
+
+预算管理支持 HIGH_BUDGET → LOW_BUDGET → FINALIZING，低预算集中补齐交付物，收尾禁用工具；实现与真实编码对比见 [Budget Manager](docs/budget-management.md)。

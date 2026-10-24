@@ -245,3 +245,19 @@ def test_file_scan_timeout(settings, monkeypatch):
     clock = iter([0, 10])
     monkeypatch.setattr(files.time, "monotonic", lambda: next(clock))
     assert invoke(settings, "list_files", {}).error["code"] == "timeout"
+
+
+def test_billing_error_is_actionable_and_not_retried(settings):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(402, text='SECRET', headers={'x-request-id': 'req-billing'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ModelError) as error:
+            DeepSeekModel(settings, client).generate([], [])
+    assert len(requests) == 1
+    assert 'balance or billing' in str(error.value)
+    assert 'SECRET' not in str(error.value)
+    assert error.value.details['http_status'] == 402
+    assert error.value.details['request_id'] == 'req-billing'
+    assert error.value.details['kind'] == 'billing_error'

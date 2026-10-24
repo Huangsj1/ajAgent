@@ -48,3 +48,7 @@ runtime/harness 模板和本地配置已调整到：100 steps、300 次工具调
 [harness].auto_approve_tools 默认只包含 plan_tasks、update_task_paths、start_task、checkpoint_task、verify_task。真正的 run_command / write_file 等仍走权限，deny 优先。示例编码试验使用单独的 ignored config/long-task-demo.local.toml，workspace 限定为 examples/projects/expense_tracker，并显式授权该试验需要的副作用；不更改主配置的执行授权。
 
 交互审批可输入 `once`（仅本次）、`session`（当前会话内相同权限范围）、`allow_all`（当前会话所有工具）或 `no`（拒绝）。选择 `allow_all` 后，后续 write/execute 不再逐个询问；授权随会话保存，`--resume` 时继续生效，新会话不继承。显式 deny、workspace 限制、hooks 和执行预算仍然有效。
+
+预算软阶段统一位于 `[harness]`：`low_budget_ratio=0.35`、`finalizing_ratio=0.10`、`final_input_tokens=4096`、`final_output_tokens=1024`、`repeat_window=12`。硬上限仍为 max_steps / max_tool_calls / max_tokens / max_seconds；收尾也计费，详见 [Budget Manager](budget-management.md)。
+
+Snake 日志反馈后，默认长任务额度为 300 steps / 900 tools / 6,000,000 tokens / 3,600 seconds；`final_step_reserve=1` 只预留最后一步，steps 不再套用 10% 收尾比例。CLI 打印实际配置，日志中的 `phase_reason` 区分触发资源。详见 [Snake 诊断](experiments/snake-budget-diagnosis.md)。
