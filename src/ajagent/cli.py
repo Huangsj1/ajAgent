@@ -97,8 +97,7 @@ def main():
                 raise ValueError("Task ID conflicts with resumed session")
             session.task_id = args.task
         builder = ContextBuilder(settings.context_tokens, settings.output_tokens, options.context)
-        builder.summary = session.checkpoint.get('summary', '')
-        builder.covered = session.checkpoint.get('summarized_groups', 0)
+        builder.restore(session.checkpoint, session.groups)
         print(f'Session: {session.id}')
         adapter = DeepSeekModel if settings.provider == "deepseek" else OpenAIModel
         print(f"Provider: {settings.provider} | Model: {settings.model}")

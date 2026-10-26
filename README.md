@@ -34,7 +34,7 @@ uv run ajagent --workspace /absolute/path/to/project --resume SESSION_ID '继续
 
 配置按用途拆分在 `config/`：模型、运行参数、工具、RAG、预算、任务与协作。文件职责、合并规则和路径规则见 [配置说明](config/README.md)。
 
-**所有工具组统一在 `config/tools.local.toml` 的 `[tools].enabled` 开关。** 默认启用 files、database、execution、web、skills、delegation、artifacts、tasks；retrieval、browser、mcp 按需添加。启用工具组不会自动批准写入或执行操作。
+**所有工具组统一在 `config/tools.local.toml` 的 `[tools].enabled` 开关。** 默认启用 files、database、execution、web、skills、delegation、artifacts、tasks、history；retrieval、browser、mcp 按需添加。启用工具组不会自动批准写入或执行操作。
 
 审批时可输入 `once`（本次）、`session`（当前授权范围）、`allow_all`（当前会话所有需要询问的操作）或 `no`。显式 deny 始终优先。`allow_all` 随会话保存，恢复后仍有效。
 
@@ -137,6 +137,18 @@ uv run ajagent-trace .ajagent/runs/RUN_ID --replay
 ```
 
 `total usage` 为当前 session 的累计用量，包含恢复前记录、摘要与子任务；`last_usage` 是主模型最后一次请求的 input/output，可观察当前上下文规模。trace 回放只读取事件，不重新调用模型或工具。恢复会开始新的运行预算，不会清零 session 累计用量。
+
+## 会话记忆与历史召回
+
+上下文接近窗口时，系统将旧消息分成不可变 episode，并保留结构化工作状态和最近完整工具消息。默认在输入预算 65% 启动后台压缩，88% 等待；后台结果绑定历史版本，失效就丢弃。原始 session 始终保留，已压缩摘要不会被反复拿去摘要。
+
+默认启用的 `history` 工具组提供 `history_search` 和 `history_read`，模型可按需找回精确参数、错误信息或先前纠正：
+
+```sh
+uv run ajagent --resume SESSION_ID '先用 history_search 找到之前关于保留天数的纠正，再用 history_read 核对原话后继续'
+```
+
+参数位于 `config/runtime.local.toml` 的 `[limits.context]`。`speculative=false` 关闭后台压缩，保留 hard 阶段同步压缩。召回只读取当前 session；历史证据可能过时，当前文件仍需重新检查。设计、失败边界与测试见 [架构中的记忆系统](docs/architecture.md#上下文会话和记忆)。
 
 ## 长期记忆
 

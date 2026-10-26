@@ -2,12 +2,12 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-GROUPS = frozenset({'files', 'database', 'execution', 'web', 'browser', 'retrieval', 'skills', 'delegation', 'mcp', 'artifacts', 'tasks'})
+GROUPS = frozenset({'files', 'database', 'execution', 'web', 'browser', 'retrieval', 'skills', 'delegation', 'mcp', 'artifacts', 'tasks', 'history'})
 
 
 @dataclass(frozen=True)
 class ToolConfig:
-    enabled: tuple = ('files', 'database', 'execution', 'web', 'skills', 'delegation', 'artifacts', 'tasks')
+    enabled: tuple = ('files', 'database', 'execution', 'web', 'skills', 'delegation', 'artifacts', 'tasks', 'history')
     disabled: tuple = ()
     skills_path: str = 'skills'
     mcp_config: str = 'mcp.local.toml'

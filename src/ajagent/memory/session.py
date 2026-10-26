@@ -1,6 +1,7 @@
 """Append-only session events; complete model/tool batches are replay units."""
 import json
 from pathlib import Path
+from copy import deepcopy
 import re
 from uuid import uuid4
 from ajagent.options import DEFAULTS
@@ -62,7 +63,8 @@ class Session:
 
     def record(self, items):
         """Checkpoint each complete replay batch, not each individual event."""
-        self.append({'event': 'messages', 'items': items})
+        items = deepcopy(items)
+        self.append({'event': 'messages', 'group_id': f'g{len(self.groups)+1}', 'items': items})
         self.groups.append(items)
         self.flush()
 

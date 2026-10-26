@@ -10,10 +10,21 @@ tool_timeout = 30.0
 max_output_chars = 12000
 
 [limits.context]
+# Ratios apply to context_tokens minus output_tokens.
+speculative = true
+soft_ratio = 0.65
+hard_ratio = 0.88
+state_entries = 3
+entry_chars = 300
+visible_episodes = 3
+history_page_chars = 3000
+history_search_results = 8
+history_snippet_chars = 240
 summarization_enabled = true
 tool_excerpt_chars = 1000
 recent_groups = 2
 summary_overhead_tokens = 256
+summary_output_tokens = 2048
 estimated_bytes_per_token = 3
 repeated_batches = 3
 

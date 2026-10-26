@@ -14,6 +14,7 @@
 | `skills/` | 索引 skill metadata，按需加载正文 |
 | `mcp/` | 多 server 连接管理，stdio / Streamable HTTP 客户端 |
 | `delegation/` | 子任务契约、只读 worker、proposal 与主 agent 应用 |
+| `history/` | 当前 session 原始历史的字面搜索、分页读取与来源 ID |
 | `tasks/` | 持久任务计划、验收、检查点接口 |
 
 添加工具时定义 ToolSpec 与 JSON Schema，并在统一 loader 中接线；read/write/execute 分类必须反映实际副作用。Runner 负责权限、预算、并发调度和事件，工具处理函数专注具体操作。工具失败抛出 ToolError 或返回明确失败观察，不能吞掉异常伪装成功。

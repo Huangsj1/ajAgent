@@ -8,6 +8,13 @@ flowchart TD
     T --> R
     R --> B[ContextBuilder: 指令、记忆、进度、历史]
     B --> M[DeepSeek / OpenAI 适配器]
+    B --> SC[65% 后台压缩候选 / 88% 等待]
+    SC --> VC{history_version 一致?}
+    VC -->|是| EP[冻结 episode + 结构化状态]
+    VC -->|否| DROP[丢弃候选，仍结算用量]
+    EP --> B
+    S --> HR[history_search / history_read 原始历史召回]
+    HR --> O
     M --> D{模型响应}
     D -->|工具调用| P[校验参数、预算和权限]
     P --> X[并行 read / 串行 write 和 execute]
@@ -66,13 +73,81 @@ include 路径相对声明文件；RAG、skills、mcp_config 等业务路径相�
 
 ## 上下文、会话和记忆
 
-ContextBuilder 组合系统指令、AJAGENT.md、可用 skills 描述、长期记忆、任务进度和会话历史。工具请求及对应结果作为协议组处理，不截出无法续接的孤立消息。超出输入预算时先限制观察，再摘要旧历史；原始 session 历史保留。
+记忆分为三个生命周期：**原始 session 是可召回记录，context 是可替换的模型输入，长期 Memory 是经用户确认的跨会话偏好**。压缩不会删除或改写原始消息，也不会自动生成长期记忆。
 
-`[limits.context].summarization_enabled=false` 可关闭摘要。若仅靠缩短观察仍无法容纳请求，返回 context_error，不静默丢弃原始历史。
+### 三层工作上下文
 
-Session 使用 JSONL 记录消息、审批和结束状态；常规记录缓冲，关键持久化边界刷新。运行结束通过统一入口保存状态与用量。副作用 checkpoint 必须在执行前保存，不能为减少 I/O 而延后到最终退出。
+| 层 | 保存什么 | 更新方式 |
+| --- | --- | --- |
+| FrozenEpisodeIndex | 原始 group 范围、SHA-256、结构化条目及其来源 ID | 只追加；已经冻结的 episode 永不再次交给摘要模型 |
+| MutableStateCheckpoint | goals、constraints、decisions、progress、open_questions | 从冻结条目按时间确定性选择每类最近 N 条，不让模型反复改写摘要 |
+| RecentRawTail | 最近完整协议组，以及当前请求 | 保留调用/结果对；较长工具输出可显示摘录，原始内容仍可 recall |
 
-`--resume` 校验 workspace、provider、model 后继续原会话。session 的 total usage 从上次结束记录累加，包含摘要和子任务消耗；last_usage 记录主模型最后一次请求，不能将二者相互替代。长期记忆是独立的显式条目，不等同于历史摘要；用户反馈需审核后才能写入。
+`context/compaction.py` 要求摘要返回严格 JSON。每条包含 `text` 和 `refs`；refs 只能指向本次输入中真实存在的 `g1`、`g2` 等 ID。Python 生成 episode 范围和哈希，模型不能自行指定已覆盖边界。假引用、超长条目、不完整输出都会拒绝提交，原始历史不变。来源身份校验不能证明摘要语义真实。
+
+当前 checkpoint 有意采用容易理解的“选择”策略：保留最近条目，新的纠正优先；旧条目仍在冻结目录和原始 session 中，必要时主动召回。它不做语义冲突自动裁决，也不保证所有旧约束永远驻留 prompt。task 的持久进度交接可直接替换工作状态，同时为被隐藏的消息记录范围；当前用户请求另行保留，避免被合成的工具反馈提示挤掉。
+
+模型只看到最近 `visible_episodes` 个目录项和有界状态；更早目录不再驻留输入，但所有原始 group 仍可按 ID 读取或搜索。这避免目录无限增长，不宣称完整前缀永远命中厂商缓存。
+
+### Soft / hard 压缩与版本校验
+
+比例针对 `context_tokens - output_tokens` 的可用输入预算，并包含工具定义；token 使用保守字节估算，而非厂商精确 tokenizer。
+
+1. 低于 65%：正常使用原始上下文。
+2. 65%–88%：单 worker 在不可变快照上生成候选，主请求可以继续；最多一个待提交候选。
+3. 达到 88%：等待已有候选，然后同步压缩尚未覆盖的原始组，直到降压或仅剩保留尾部。大历史按能装入摘要请求的完整组分批处理。
+4. 主线程提交前校验 `history_version`：它是完整历史与当前工作状态的内容指纹。追加消息、同长度改写、task handoff 都使旧候选失效；stale 就丢弃，绝不覆盖新状态。
+5. 每次模型响应记录进历史前也检查已完成候选，让及时完成的后台结果有机会在版本变化前提交。
+
+摘要请求本身也必须装入窗口，提交还需通过同口径的缩小检查。soft 失败保留原输入并记录诊断；hard 阶段无法压缩则明确返回 context_error。单个不可拆分的大 batch、过大的系统指令或近期用户消息仍可能无法容纳，不以破坏工具协议换取继续运行。
+
+`ObservedModel.generate_summary` 使用独立 adapter 副本和同一 Budget 的线程安全预留/结算。后台摘要不会改变主模型的 last_usage；有效、无效以及 stale 候选的实际用量都计入 total usage。结束时先等待 worker 结算，再保存 session 结束记录并关闭 HTTP client；因此结束可能等待一次受模型超时/运行预算约束的请求。进程强制杀死时仍可能无法获取在途 API 的最终账单。
+
+### 召回原始证据
+
+`tools/history/recall.py` 提供统一工具组 `history`，通过 `[tools].enabled` 开关，默认启用：
+
+- `history_search(query, cursor=0)`：当前 session 内不区分大小写的字面搜索，返回 group ID、命中摘录、扫描覆盖范围与下一页游标；不会访问其他 session。
+- `history_read(group_id, offset=0)`：按字符分页读取完整原始协议组的 JSON 文本，返回 next_offset 和来源 URI。分页文本作为普通工具结果进入尾部，不重放其中的工具调用。
+
+召回包含已压缩的内容、尚未压缩的尾部以及恢复前消息，经过 session 的脱敏函数。这里的原始内容指模型曾看见的协议消息；执行器另存的超长完整结果需使用 read_artifact，不会把日志中的额外内部事件直接注入模型。零结果仅说明没有字面匹配；可换关键词或按目录范围直接 read。原历史可能包含过时路径和错误结论，召回不能替代重新检查当前文件。
+
+这里没有新增数据库或 embedding 依赖：直接在内存中的 session 消息上扫描，返回结果有界，扫描耗时与历史大小相关。它适合本地学习项目；超长历史的磁盘分页/FTS 可独立扩展。
+
+### 持久化、恢复与配置
+
+Session 为完整消息组写入稳定的 `group_id` 并复制输入，避免调用者事后修改已记录内容。JSONL 是原始记录；`context` 事件保存版本化 checkpoint、episode 目录与覆盖前缀哈希，`context_stats` 仅保存观察指标。候选未提交不影响恢复；checkpoint 在发布到工作上下文前落盘。恢复校验范围和哈希，错配则回到原始历史；旧版纯字符串摘要作为临时提示保留，但原始组重新进入可索引范围。
+
+常规事件缓冲，完整协议组和关键 checkpoint 刷新；副作用 checkpoint 仍在执行前保存。`--resume` 要求原 workspace、provider、model。total usage 从上次 end 累计，last_usage 仅为主模型最后请求；原有 Memory 的 remember/list/forget 和反馈审核机制保持独立。
+
+所有参数位于 `config/runtime.local.toml` 的 `[limits.context]`：
+
+```toml
+summarization_enabled = true
+speculative = true
+soft_ratio = 0.65
+hard_ratio = 0.88
+recent_groups = 2
+state_entries = 3
+entry_chars = 300
+visible_episodes = 3
+summary_output_tokens = 2048
+history_page_chars = 3000
+history_search_results = 8
+history_snippet_chars = 240
+```
+
+`speculative=false` 只关闭后台生成，hard 压缩仍保留；`summarization_enabled=false` 关闭模型压缩，超窗时仍保留原始历史。history 工具是独立开关，即使不压缩也能使用。example 与 local 配置均已更新。
+
+### 参考与验证
+
+参考 [OpenAI Compaction 文档](https://developers.openai.com/api/docs/guides/compaction) 的窗口管理和 [Codex compact.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) 的压缩/历史替换边界。OpenAI 的原生 compact 返回 opaque 状态；本项目为兼容双厂商采用可读 JSON，不实现同等模型内部记忆，也不声称 65%/88% 是 Codex 的固定策略。
+
+三层思路参考 [DSH recallable compaction 提案镜像](https://huggingface.co/SaylorTwift/deepseek-harness/blob/main/.agents/notes/proposed/feature/2026-07-06-recallable-compaction.md)，该文档标为 proposed。本项目简化为单后台 worker、原始 group 地址和确定性状态选择，没有复制其插件系统、并行多 region 提交或可变状态重写机制。
+
+`tests/test_recallable_context.py` 覆盖 soft 不阻塞、hard 等待、同长度历史变更导致 stale、重复压缩不重写旧 episode、DeepSeek/Responses 工具配对、伪造引用拒绝、分页召回、恢复一致性、任务交接冲突和后台用量结算，并让脚本模型通过真实 loop 调用 recall 工具找回被省略的细节。
+
+2026-10-25 的一次真实 DeepSeek 小样本保留了“17 天改为 23 天”的纠正并通过召回/恢复检查，估算输入从 2386 降至 560 token；实际摘要请求为 1371 input / 170 output tokens。这是接口烟雾测试，不是长期记忆准确率结论。
 
 ## Budget 与结束协议
 

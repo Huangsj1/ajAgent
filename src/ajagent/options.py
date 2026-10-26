@@ -67,9 +67,19 @@ class CapabilityOptions:
 @dataclass(frozen=True)
 class ContextOptions:
     summarization_enabled: bool = True
+    speculative: bool = True
+    soft_ratio: float = 0.65
+    hard_ratio: float = 0.88
+    state_entries: int = 3
+    entry_chars: int = 300
+    visible_episodes: int = 3
+    history_page_chars: int = 3000
+    history_search_results: int = 8
+    history_snippet_chars: int = 240
     tool_excerpt_chars: int = 1000
     recent_groups: int = 2
     summary_overhead_tokens: int = 256
+    summary_output_tokens: int = 2048
     estimated_bytes_per_token: int = 3
     repeated_batches: int = 3
 
@@ -207,6 +217,8 @@ class Options:
         result = cls(**groups)
         if result.tools.default_read_lines > result.tools.max_read_lines or result.tools.sql_rows > result.tools.sql_max_rows:
             raise ValueError('Default tool limits exceed maximums')
+        if not 0 < result.context.soft_ratio < result.context.hard_ratio < 1:
+            raise ValueError('Require 0 < soft_ratio < hard_ratio < 1')
         if not result.tools.allowed_commands:
             raise ValueError('allowed_commands must not be empty')
         if result.retrieval.result_limit > result.retrieval.backend_limit or result.retrieval.default_results > result.retrieval.result_limit:

@@ -198,7 +198,7 @@ def test_post_response_token_limit_prevents_side_effect(tmp_path):
 def test_compaction_event_and_total_usage(tmp_path):
     run = runner(tmp_path, [final()])
     # Small injected builder exercises the same observable compaction boundary.
-    class Builder:
+    class Builder(ContextBuilder):
         usage = {'input_tokens': 0, 'output_tokens': 0}
         covered = 0
         summary = ''

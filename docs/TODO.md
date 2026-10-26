@@ -217,9 +217,11 @@ knowledge/.index/            # Generated data; ignored.
 - [x] S4.4 项目指令：加载工作目录里的 `AJAGENT.md`，和长期记忆分开；首版不实现多级继承或任意文件导入。
 - [x] S4.5 构建 context builder，预留输出预算；计数不精确时标记 estimated，超限先截断大工具输出，再压缩旧对话。
 - [x] S4.6 压缩摘要保留目标、约束、已完成工作、未解决问题、证据位置；保留最近完整的调用/结果对，不能只留下 tool result。
-- [x] S4.7 原始历史不被摘要覆盖；摘要失败时保留原状态并清楚结束，不反复压缩重试。
+- [x] S4.7 原始历史不被摘要覆盖；soft 失败保留输入，hard 无法降压时明确结束。
 - [x] S4.8 记忆默认限制条数/长度；明确陈旧记忆不能盖过新文件事实和用户纠正；支持修改和删除。
 - [x] S4.9 用两次会话验证恢复与遗忘；同一问题分别关闭/开启记忆，观察答案变化及上下文大小。
+
+- [x] S4.10 冻结 episode + 结构化状态 + 原始尾部；两级阈值、版本校验后台候选、同会话 recall、持久恢复与用量隔离均有测试。
 
 **文件安排：**
 
@@ -232,8 +234,10 @@ src/ajagent/memory/
 ├── session.py
 └── long_term.py
 AJAGENT.md
+src/ajagent/tools/history/recall.py
 tests/test_context.py
 tests/test_memory.py
+tests/test_recallable_context.py
 .ajagent/
 ├── sessions/<session_id>.jsonl
 └── memory/

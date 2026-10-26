@@ -22,9 +22,17 @@ If a tool fails, revise its arguments or choose another tool. Do not claim unobs
 def run_agent(prompt, model: ModelClient, registry, max_steps=RUNTIME.max_steps, max_output_chars=RUNTIME.max_output_chars, on_tool=None,
               system_prompt=SYSTEM, session=None, context_builder=None, harness=None):
     summary_before = dict(context_builder.usage) if context_builder else {}
+    if context_builder:
+        context_builder.current_request = prompt
+        if session:
+            context_builder.bind(session)
     try:
-        result = _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
-                            system_prompt, session, context_builder, harness)
+        try:
+            result = _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
+                                system_prompt, session, context_builder, harness)
+        finally:
+            if context_builder:
+                context_builder.close()
         if harness:
             result.usage = dict(harness.used)
         elif context_builder:
@@ -46,6 +54,8 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
     groups = deepcopy(session.groups) if session else []
 
     def record(items):
+        if context_builder:
+            context_builder.poll(system_prompt, groups, list(registry.values()))
         groups.append(items)
         if session:
             session.record(items)
@@ -88,8 +98,7 @@ def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
                        if context_builder else [{"role": "system", "content": active_system}] +
                        [item for group in groups for item in group])
             if session and context_builder:
-                session.append({'event': 'context', **context_builder.stats,
-                                'summary': context_builder.summary})
+                session.append({'event': 'context_stats', **context_builder.stats})
             if harness:
                 harness.context_ready(previous_covered)
             turn = model.generate(context, list(registry.values()))

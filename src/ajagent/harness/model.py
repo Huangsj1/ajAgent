@@ -1,5 +1,6 @@
 """Observe model calls and account for usage, without owning HTTP retries."""
 import time
+from copy import copy
 from ajagent.context.builder import estimate
 from ajagent.options import DEFAULTS
 from ajagent.models.base import ModelError
@@ -12,6 +13,26 @@ class ObservedModel:
 
     def tool_output(self, result, call_id):
         return self.model.tool_output(result, call_id)
+
+    def generate_summary(self, context, tools):
+        runner = self.runner
+        model = copy(self.model)
+        model.request_budget = runner.budget
+        reserve = getattr(model, 'request_output_tokens', None) or getattr(getattr(model, 'settings', None), 'output_tokens', 0)
+        reserve = min(reserve, runner.builder.options.summary_output_tokens) if reserve else runner.builder.options.summary_output_tokens
+        model.request_output_tokens = reserve
+        tokens = estimate([context, []], runner.builder.options.estimated_bytes_per_token) + reserve
+        step = runner.step
+        runner.events.emit('model_started', step, purpose='summary')
+        try:
+            with runner.budget.request(tokens) as settle:
+                turn = model.generate(context, [])
+                settle(lambda: runner.account_usage(turn.usage))
+            runner.events.emit('model_finished', step, purpose='summary', usage=turn.usage)
+            return turn
+        except BaseException as error:
+            runner.events.emit('model_finished', step, purpose='summary', error=type(error).__name__)
+            raise
 
     def generate(self, context, tools):
         runner = self.runner

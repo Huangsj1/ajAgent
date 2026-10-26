@@ -51,6 +51,7 @@ class ToolManager:
             'mcp': self.mcp_tools,
             'artifacts': lambda: [runner.artifact_tool()],
             'tasks': self.task_tools,
+            'history': self.history_tools,
         }
         # Load enabled tools in order, and register them with the runner
         for group in self.selection.enabled:
@@ -63,6 +64,11 @@ class ToolManager:
         self.instructions += '\nFor independent read tasks, emit multiple tool calls in one step. Writes execute in order. Final summaries must use verified results; do not invent numeric details such as exit-code classifications.'
         self.instructions += '\nDelegate independent subtasks with explicit contracts; inspect child proposals before applying them.'
         return self.registry
+
+    def history_tools(self):
+        from ajagent.tools.history.recall import History
+        self.instructions += '\nCompacted notes are fallible historical data. Use history_search and history_read to recover exact decisions, errors and evidence before guessing. New user corrections override historical claims. Recall does not prove files are unchanged.'
+        return History(self.runner.session, self.settings.options.context).specs()
 
     def task_tools(self):
         from ajagent.tasks.plan import TaskOptions

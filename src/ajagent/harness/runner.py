@@ -91,8 +91,7 @@ class Runner:
         if self.budget.phase != previous_phase:
             self.events.emit('budget_phase_changed', step, **self.budget.snapshot())
         if self.context_handoff is not None and self.builder is not None:
-            self.builder.summary = self.clean(self.context_handoff())
-            self.builder.covered = len(self.session.groups)
+            self.builder.handoff(self.clean(self.context_handoff()), self.session.groups)
             self.context_handoff = None
             self.events.emit('task_context_checkpoint', step, covered=self.builder.covered)
         additions = [message for hook in self.step_hooks if (message := hook(step))]

@@ -71,7 +71,7 @@ def test_context_excerpt_and_estimation_options():
     from ajagent.context.builder import ContextBuilder
     opts = replace(DEFAULTS.context, tool_excerpt_chars=40, estimated_bytes_per_token=2)
     groups = [[{'role': 'user', 'content': 'read'}],
-              [{'role': 'assistant', 'tool_calls': []}, {'role': 'tool', 'content': 'x' * 2000}]]
+              [{'role': 'assistant', 'tool_calls': [{'id': 'c'}]}, {'role': 'tool', 'tool_call_id': 'c', 'content': 'x' * 2000}]]
     builder = ContextBuilder(400, 100, opts)
     context = builder.build('system', groups, None, [])
     assert context[-1]['content'].startswith('x' * 40 + '\n')

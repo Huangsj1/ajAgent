@@ -1,4 +1,5 @@
 """Usage distinguishes accumulated cost from the last model request."""
+from ajagent.context.builder import ContextBuilder
 from ajagent.core.loop import run_agent
 from ajagent.core.types import ModelTurn, ToolCall
 from ajagent.models.base import ModelError
@@ -35,8 +36,11 @@ def test_failed_request_retains_last_reported_usage():
 
 
 def test_summary_usage_is_counted_once_per_run():
-    class Builder:
-        usage = {'input_tokens': 1000, 'output_tokens': 100}
+    class Builder(ContextBuilder):
+        def __init__(self):
+            super().__init__()
+            self.usage = {'input_tokens': 1000, 'output_tokens': 100}
+
         def build(self, system, groups, model, tools):
             self.usage = {k: v + 5 for k, v in self.usage.items()}
             return []
@@ -81,7 +85,7 @@ def test_resume_without_end_defaults_to_zero(tmp_path):
 
 def test_session_total_includes_new_summary_usage(tmp_path):
     from ajagent.memory.session import Session
-    class Builder:
+    class Builder(ContextBuilder):
         usage = {'input_tokens': 0, 'output_tokens': 0}
         stats = {}
         summary = ''

@@ -1,5 +1,6 @@
 """Budgeted context keeps protocol batches and immutable raw history."""
 from copy import deepcopy
+import json
 import pytest
 from ajagent.context.builder import ContextBuilder, estimate
 from ajagent.context.compaction import ContextError
@@ -18,7 +19,10 @@ class Summary:
         assert 'Evidence locations' in context[0]['content']
         if self.failure:
             raise ModelError('unavailable')
-        return ModelTurn(text='Goal: fix. Constraints: keep API. Completed work: read. Open questions: test. Evidence locations: a.py:12')
+        source = json.loads(context[1]['content'])
+        state = {key: [] for key in ('goals', 'constraints', 'decisions', 'progress', 'open_questions')}
+        state['progress'] = [{'text': 'Read a.py:12', 'refs': [source[-1]['id']]}]
+        return ModelTurn(text=json.dumps(state))
 
 
 @pytest.mark.parametrize('provider', ['deepseek', 'openai'])
