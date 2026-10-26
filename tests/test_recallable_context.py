@@ -34,18 +34,18 @@ class Summarizer:
 def groups():
     return [[{'role': 'user', 'content': 'Keep exact constraints'}],
             [{'role': 'assistant', 'content': 'legacy marker SECRET_DETAIL_42 ' + 'old ' * 1600}],
-            [{'role': 'assistant', 'content': 'recent'}],
-            [{'role': 'assistant', 'content': 'tail'}]]
+            [{'role': 'assistant', 'content': 'recent ' * 100}],
+            [{'role': 'assistant', 'content': 'tail ' * 100}]]
 
 
 def builder_for(history, *, soft=True):
     size = estimate([[{'role': 'system', 'content': 'system'}] + [item for g in history for item in g], []])
     # Exact thresholds are exercised without wall-clock sleeps.
-    budget = int(size / (.74 if soft else .89))
+    budget = int(size / (.83 if soft else .96))
     return ContextBuilder(budget + 100, 100)
 
 
-def test_soft_is_nonblocking_and_commits_at_same_version():
+def test_soft_is_nonblocking_and_waits_for_hard_threshold():
     history, gate = groups(), Event()
     builder, model = builder_for(history), Summarizer(gate)
     try:
@@ -53,7 +53,12 @@ def test_soft_is_nonblocking_and_commits_at_same_version():
         assert model.started.wait(1)
         assert builder.covered == 0 and result[-1] == history[-1][0]
         gate.set()
+        builder._pending[1].result(timeout=2)
         builder.poll('system', history, [], wait=True)
+        builder.build('system', history, model, [])
+        assert builder.covered == 0 and builder._pending is not None
+        history.append([{'role': 'assistant', 'content': 'new ' * 900}])
+        builder.build('system', history, model, [])
         assert builder.covered == 2
         assert builder.usage == {'input_tokens': 30, 'output_tokens': 10}
     finally:
@@ -69,7 +74,7 @@ def test_stale_result_discarded_even_when_history_length_is_unchanged():
         assert model.started.wait(1)
         history[0][0]['content'] = 'Corrected requirement'
         gate.set()
-        builder.poll('system', history, [], wait=True)
+        builder.poll('system', history, [], wait=True, adopt=True)
         assert builder.covered == 0 and not builder.episodes
         assert 'stale_discarded' in builder.diagnostics
         assert builder.usage['input_tokens'] == 30
@@ -78,7 +83,7 @@ def test_stale_result_discarded_even_when_history_length_is_unchanged():
         builder.close()
 
 
-def test_hard_waits_then_rebuilds_stale_proposal():
+def test_hard_waits_and_reuses_proposal_after_tail_append():
     history, gate = groups(), Event()
     builder, model = builder_for(history), Summarizer(gate)
     builder.build('system', history, model, [])
@@ -99,8 +104,9 @@ def test_hard_waits_then_rebuilds_stale_proposal():
     worker.join(5)
     builder.close()
     assert done.is_set() and not errors
-    assert 'stale_discarded' in builder.diagnostics and builder.covered > 0
-    assert builder.usage['input_tokens'] == 60
+    assert 'stale_discarded' not in builder.diagnostics and builder.covered == 2
+    assert builder.usage['input_tokens'] == 30
+    assert history[-1][0]['content'] == 'new ' * 900
 
 
 def test_multiple_passes_never_resummarize_frozen_episodes_and_recall_survives_resume(tmp_path):
@@ -123,7 +129,7 @@ def test_multiple_passes_never_resummarize_frozen_episodes_and_recall_survives_r
     assert all(int(item['id'][1:]) > first_end for batch in model.inputs[1:] for item in batch)
     restored = Session(tmp_path, 'deepseek', 'fake', session.id)
     other = ContextBuilder()
-    other.restore(restored.checkpoint, restored.groups)
+    other.bind(restored)
     assert other.episodes == builder.episodes and other.summary == builder.summary
     recall = History(restored, replace(DEFAULTS.context, history_page_chars=80))
     data, _ = recall.search('SECRET_DETAIL_42')
@@ -134,7 +140,8 @@ def test_multiple_passes_never_resummarize_frozen_episodes_and_recall_survives_r
         pieces.append(page['text'])
         offset = page['next_offset']
     assert json.loads(''.join(pieces)) == history[1]
-    assert restored.groups == history
+    assert restored.groups == history[builder.covered:]
+    assert restored.groups.start == builder.covered
 
 
 def test_invented_refs_rejected_and_charged_without_state_change():
@@ -206,7 +213,7 @@ def test_task_handoff_invalidates_worker_and_preserves_recall(tmp_path):
     assert model.started.wait(1)
     builder.handoff('Durable task state: tests pending', history)
     gate.set()
-    builder.poll('system', history, [], wait=True)
+    builder.poll('system', history, [], wait=True, adopt=True)
     builder.close()
     assert builder.summary == 'Durable task state: tests pending'
     assert 'stale_discarded' in builder.diagnostics
@@ -282,3 +289,20 @@ def test_background_usage_settled_before_session_end(tmp_path):
     assert run.budget.reserved == 0
     restored = Session(tmp_path / '.ajagent', 'deepseek', 'fake', run.session.id)
     assert restored.usage == result.usage
+
+
+def test_uncovered_tail_edit_does_not_invalidate_ready_segment():
+    history, model = groups(), Summarizer()
+    builder = builder_for(history)
+    try:
+        builder.build('system', history, model, [])
+        episode = builder._pending[1].result(timeout=2)
+        assert episode['end'] == 2
+        history[3][0]['content'] = 'Corrected recent observation'
+        history.append([{'role': 'assistant', 'content': 'new ' * 900}])
+        builder.build('system', history, model, [])
+        assert builder.covered == 2 and len(model.inputs) == 1
+        assert 'stale_discarded' not in builder.diagnostics
+        assert 'Corrected recent observation' in str(builder._pack('system', history, []))
+    finally:
+        builder.close()

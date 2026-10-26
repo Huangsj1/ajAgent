@@ -181,7 +181,8 @@ def test_task_checkpoint_replaces_context_not_history_or_usage(tmp_path):
         result = run.run('Create the feature')
         assert result.status == 'completed'
         assert run.builder.covered > 0 and 'Durable task state' in run.builder.summary
-        assert len(run.session.groups) > run.builder.covered
+        assert run.session.group_count > run.builder.covered
+        assert run.session.groups.start == run.builder.covered
         assert result.usage == {'input_tokens':60,'output_tokens':11}
         assert 'write_file' in run.session.path.read_text()
         events = [json.loads(row) for row in (run.events.root/'events.jsonl').read_text().splitlines()]

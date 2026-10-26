@@ -4,7 +4,6 @@ from ajagent.options import DEFAULTS, RUNTIME
 from ajagent.core.types import RunResult
 from ajagent.context.compaction import ContextError
 from dataclasses import asdict
-from copy import deepcopy
 from ajagent.models.base import ModelError, ModelClient
 from ajagent.harness.budget import FinalizeRequired
 from ajagent.tools.common.registry import execute, serialize
@@ -21,6 +20,9 @@ If a tool fails, revise its arguments or choose another tool. Do not claim unobs
 
 def run_agent(prompt, model: ModelClient, registry, max_steps=RUNTIME.max_steps, max_output_chars=RUNTIME.max_output_chars, on_tool=None,
               system_prompt=SYSTEM, session=None, context_builder=None, harness=None):
+    if session and session.groups.start and context_builder is None:
+        from ajagent.context.builder import ContextBuilder
+        context_builder = ContextBuilder()
     summary_before = dict(context_builder.usage) if context_builder else {}
     if context_builder:
         context_builder.current_request = prompt
@@ -51,14 +53,13 @@ def run_agent(prompt, model: ModelClient, registry, max_steps=RUNTIME.max_steps,
 
 def _run_agent(prompt, model, registry, max_steps, max_output_chars, on_tool,
                system_prompt, session, context_builder, harness):
-    groups = deepcopy(session.groups) if session else []
+    groups = session.groups if session else []
 
     def record(items):
-        if context_builder:
-            context_builder.poll(system_prompt, groups, list(registry.values()))
-        groups.append(items)
         if session:
             session.record(items)
+        else:
+            groups.append(items)
 
     record([{"role": "user", "content": prompt}])
     usage = {"input_tokens": 0, "output_tokens": 0}

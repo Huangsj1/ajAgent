@@ -68,13 +68,14 @@ class CapabilityOptions:
 class ContextOptions:
     summarization_enabled: bool = True
     speculative: bool = True
-    soft_ratio: float = 0.65
-    hard_ratio: float = 0.88
+    soft_ratio: float = 0.80
+    hard_ratio: float = 0.95
     state_entries: int = 3
     entry_chars: int = 300
     visible_episodes: int = 3
     history_page_chars: int = 3000
     history_search_results: int = 8
+    history_scan_groups: int = 256
     history_snippet_chars: int = 240
     tool_excerpt_chars: int = 1000
     recent_groups: int = 2

@@ -70,7 +70,7 @@ class Runner:
         self.events.checkpoint(session_id=self.session.id, state=asdict(self.state),
                                completed_step=self.completed_step, pending=self.pending,
                                changed=sorted(self.hooks.changed),
-                               groups=len(self.session.groups), usage=self.session.usage, evidence=self.evidence.values())
+                               groups=self.session.group_count, usage=self.session.usage, evidence=self.evidence.values())
 
     def account_usage(self, usage):
         # All descendants share the root budget lock.

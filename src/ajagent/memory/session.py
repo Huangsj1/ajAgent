@@ -5,6 +5,7 @@ from copy import deepcopy
 import re
 from uuid import uuid4
 from ajagent.options import DEFAULTS
+from ajagent.memory.history import ActiveGroups, HistoryIndex
 
 
 class Session:
@@ -22,25 +23,24 @@ class Session:
         self.grants = set()     # granted permission keys
         self.run_id = None
         self.task_id = None
-        self.groups = []
+        self.groups = ActiveGroups()
+        self.history = HistoryIndex(self.path)
         self.checkpoint = {}
         self.usage = {"input_tokens": 0, "output_tokens": 0}
         if session_id:
-            # Load the whole session
-            events = [json.loads(line) for line in self.path.read_text().splitlines()]
-            if events[0] != {'event': 'session', 'provider': provider, 'model': model}:
+            self.history.sync()
+            meta = self.history.metadata()
+            if meta.get('session') != {'event': 'session', 'provider': provider, 'model': model}:
                 raise ValueError('Resume requires the original provider and model')
-            self.task_id = next((e['task_id'] for e in reversed(events) if e['event'] == 'task_bound'), None)
-            self.grants = {e['key'] for e in events if e['event'] == 'permission_granted'}
-            self.run_id = next((e['run_id'] for e in reversed(events) if e['event'] == 'harness_run'), None)
-            # get the last context event
-            self.checkpoint = next((e for e in reversed(events) if e['event'] == 'context'), {})
-            # End events contain cumulative snapshots, not increments.
-            last_end = next((e for e in reversed(events) if e['event'] == 'end'), {})
+            self.task_id = meta.get('task_bound', {}).get('task_id')
+            self.grants = set(meta.get('grants', []))
+            self.run_id = meta.get('harness_run', {}).get('run_id')
+            self.checkpoint = meta.get('context', {})
             for key in self.usage:
-                self.usage[key] = last_end.get('usage', {}).get(key, 0)
-            # Only keep the messages
-            self.groups = [event['items'] for event in events if event['event'] == 'messages']
+                self.usage[key] = meta.get('end', {}).get('usage', {}).get(key, 0)
+            start = (self.checkpoint['summarized_groups']
+                     if self.history.valid_checkpoint(self.checkpoint, meta['count']) else 0)
+            self.groups = ActiveGroups(self.history.groups(start), start)
         else:
             self.append({'event': 'session', 'provider': provider, 'model': model})
 
@@ -60,11 +60,16 @@ class Session:
             stream.write(''.join(self._pending))
         self._pending.clear()
         self._pending_bytes = 0
+        self.history.sync()
+
+    @property
+    def group_count(self):
+        return self.groups.total
 
     def record(self, items):
         """Checkpoint each complete replay batch, not each individual event."""
         items = deepcopy(items)
-        self.append({'event': 'messages', 'group_id': f'g{len(self.groups)+1}', 'items': items})
+        self.append({'event': 'messages', 'group_id': f'g{self.group_count+1}', 'items': items})
         self.groups.append(items)
         self.flush()
 

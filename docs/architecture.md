@@ -8,8 +8,8 @@ flowchart TD
     T --> R
     R --> B[ContextBuilder: 指令、记忆、进度、历史]
     B --> M[DeepSeek / OpenAI 适配器]
-    B --> SC[65% 后台压缩候选 / 88% 等待]
-    SC --> VC{history_version 一致?}
+    B --> SC[80% 准备候选 / 95% 采纳]
+    SC --> VC{覆盖段和工作状态兼容?}
     VC -->|是| EP[冻结 episode + 结构化状态]
     VC -->|否| DROP[丢弃候选，仍结算用量]
     EP --> B
@@ -93,11 +93,11 @@ include 路径相对声明文件；RAG、skills、mcp_config 等业务路径相�
 
 比例针对 `context_tokens - output_tokens` 的可用输入预算，并包含工具定义；token 使用保守字节估算，而非厂商精确 tokenizer。
 
-1. 低于 65%：正常使用原始上下文。
-2. 65%–88%：单 worker 在不可变快照上生成候选，主请求可以继续；最多一个待提交候选。
-3. 达到 88%：等待已有候选，然后同步压缩尚未覆盖的原始组，直到降压或仅剩保留尾部。大历史按能装入摘要请求的完整组分批处理。
-4. 主线程提交前校验 `history_version`：它是完整历史与当前工作状态的内容指纹。追加消息、同长度改写、task handoff 都使旧候选失效；stale 就丢弃，绝不覆盖新状态。
-5. 每次模型响应记录进历史前也检查已完成候选，让及时完成的后台结果有机会在版本变化前提交。
+1. 低于 80%：正常使用原始上下文。
+2. 80%–95%：单 worker 在活跃历史快照上生成候选，主请求继续；最多一个候选。完成后标为 ready，保留原文，不立即替换上下文。
+3. 达到 95%：等待并尝试采纳已有候选；不兼容才丢弃并重新计算。采纳后仍超过 hard 阈值则继续处理未覆盖段，直到降压或只剩保留尾部。
+4. 主线程提交前校验工作状态版本，以及候选自身的 `[start,end)` 和内容哈希。新增 groups、未覆盖尾部的修改均兼容；覆盖段变化、边界变化或 task handoff 才使候选失效。摘要仍只替换原覆盖段，其后所有消息保留。
+5. 中途不再 poll 后立即提交。后台候选本身不改变持久 checkpoint；只有 hard 阶段提交或显式 task handoff 才会推进覆盖边界并回收原文内存。
 
 摘要请求本身也必须装入窗口，提交还需通过同口径的缩小检查。soft 失败保留原输入并记录诊断；hard 阶段无法压缩则明确返回 context_error。单个不可拆分的大 batch、过大的系统指令或近期用户消息仍可能无法容纳，不以破坏工具协议换取继续运行。
 
@@ -112,11 +112,19 @@ include 路径相对声明文件；RAG、skills、mcp_config 等业务路径相�
 
 召回包含已压缩的内容、尚未压缩的尾部以及恢复前消息，经过 session 的脱敏函数。这里的原始内容指模型曾看见的协议消息；执行器另存的超长完整结果需使用 read_artifact，不会把日志中的额外内部事件直接注入模型。零结果仅说明没有字面匹配；可换关键词或按目录范围直接 read。原历史可能包含过时路径和错误结论，召回不能替代重新检查当前文件。
 
-这里没有新增数据库或 embedding 依赖：直接在内存中的 session 消息上扫描，返回结果有界，扫描耗时与历史大小相关。它适合本地学习项目；超长历史的磁盘分页/FTS 可独立扩展。
+`memory/history.py` 使用标准库 SQLite 建立 `<session_id>.history.sqlite`，不增加外部服务或 embedding：
+
+- 消息在脱敏写入 JSONL 后，增量序列化为稳定的 raw JSON 和 casefold 搜索文本；索引记录日志偏移，只处理新行。查询不再对全部 groups 做脱敏和序列化。
+- 长度至少 3 字符的查询使用 FTS5 trigram 找候选，再由 `instr` 做精确子串过滤。查询内容作为字面量引用，不开放 FTS 运算符；Unicode casefold 命中映射回原始字符偏移。
+- 1–2 字符或当前 SQLite 不支持 trigram 时，每次最多扫描 `history_scan_groups` 组（默认 256），返回 next_cursor。**空命中但有游标不代表全历史无结果。**
+- read 按 group 主键查询，通过 SQL substr 返回一页；只对返回片段再次应用当前脱敏函数。来源 ID 始终为绝对的 g1、g2，不受内存回收影响。
+- JSONL 是权威记录，SQLite 是可丢弃的投影。侧文件缺失或损坏时流式重建；普通恢复只同步新追加事件，不再逐行解析全部历史。每次工具查询使用独立短连接，支持并行只读调用。
+
+该方案用磁盘空间和增量索引写入换取召回性能；高频词仍可能匹配大量候选，短词扫描也不是常数时间。首次索引/重建需遍历日志，耗时随历史增长。日志按单 writer 追加使用，不支持另一个进程同时改写旧记录。
 
 ### 持久化、恢复与配置
 
-Session 为完整消息组写入稳定的 `group_id` 并复制输入，避免调用者事后修改已记录内容。JSONL 是原始记录；`context` 事件保存版本化 checkpoint、episode 目录与覆盖前缀哈希，`context_stats` 仅保存观察指标。候选未提交不影响恢复；checkpoint 在发布到工作上下文前落盘。恢复校验范围和哈希，错配则回到原始历史；旧版纯字符串摘要作为临时提示保留，但原始组重新进入可索引范围。
+Session 为完整消息组写入稳定的 `group_id` 并复制输入，避免调用者事后修改已记录内容。`session.groups` 是带绝对起点 start 的 ActiveGroups，仅保存未压缩尾部；`group_count = start + len(groups)` 表示全历史消息组数。loop 直接共享这个活跃容器，不再持有第二份全历史副本。JSONL 是原始记录；`context` 事件保存版本化 checkpoint、episode 目录与覆盖前缀哈希，`context_stats` 仅保存观察指标。候选未提交不影响恢复；checkpoint 在发布到工作上下文前落盘。v3 checkpoint 使用索引中的累计哈希校验覆盖前缀，恢复只加载覆盖边界之后的 raw groups。v2 checkpoint 流式验证并兼容迁移，避免把旧覆盖段一次读入内存；错配回退原始历史。旧版纯字符串摘要仍作为临时提示，其原始组重新进入可索引范围。压缩后 episode 元数据仍保留，内存不再随已归档原文体积增长。
 
 常规事件缓冲，完整协议组和关键 checkpoint 刷新；副作用 checkpoint 仍在执行前保存。`--resume` 要求原 workspace、provider、model。total usage 从上次 end 累计，last_usage 仅为主模型最后请求；原有 Memory 的 remember/list/forget 和反馈审核机制保持独立。
 
@@ -125,8 +133,8 @@ Session 为完整消息组写入稳定的 `group_id` 并复制输入，避免调
 ```toml
 summarization_enabled = true
 speculative = true
-soft_ratio = 0.65
-hard_ratio = 0.88
+soft_ratio = 0.80
+hard_ratio = 0.95
 recent_groups = 2
 state_entries = 3
 entry_chars = 300
@@ -134,6 +142,7 @@ visible_episodes = 3
 summary_output_tokens = 2048
 history_page_chars = 3000
 history_search_results = 8
+history_scan_groups = 256
 history_snippet_chars = 240
 ```
 
@@ -141,11 +150,13 @@ history_snippet_chars = 240
 
 ### 参考与验证
 
-参考 [OpenAI Compaction 文档](https://developers.openai.com/api/docs/guides/compaction) 的窗口管理和 [Codex compact.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) 的压缩/历史替换边界。OpenAI 的原生 compact 返回 opaque 状态；本项目为兼容双厂商采用可读 JSON，不实现同等模型内部记忆，也不声称 65%/88% 是 Codex 的固定策略。
+参考 [OpenAI Compaction 文档](https://developers.openai.com/api/docs/guides/compaction) 的窗口管理和 [Codex compact.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) 的压缩/历史替换边界。OpenAI 的原生 compact 返回 opaque 状态；本项目为兼容双厂商采用可读 JSON，不实现同等模型内部记忆，也不声称 80%/95% 是 Codex 的固定策略。
 
 三层思路参考 [DSH recallable compaction 提案镜像](https://huggingface.co/SaylorTwift/deepseek-harness/blob/main/.agents/notes/proposed/feature/2026-07-06-recallable-compaction.md)，该文档标为 proposed。本项目简化为单后台 worker、原始 group 地址和确定性状态选择，没有复制其插件系统、并行多 region 提交或可变状态重写机制。
 
-`tests/test_recallable_context.py` 覆盖 soft 不阻塞、hard 等待、同长度历史变更导致 stale、重复压缩不重写旧 episode、DeepSeek/Responses 工具配对、伪造引用拒绝、分页召回、恢复一致性、任务交接冲突和后台用量结算，并让脚本模型通过真实 loop 调用 recall 工具找回被省略的细节。
+`tests/test_recallable_context.py` 覆盖 soft 不阻塞、hard 等待、覆盖段变化导致 stale、追加尾部复用 ready 候选且不到 hard 不采纳、重复压缩不重写旧 episode、DeepSeek/Responses 工具配对、伪造引用拒绝、分页召回、恢复一致性、任务交接冲突和后台用量结算，并让脚本模型通过真实 loop 调用 recall 工具找回被省略的细节。
+
+`tests/test_history_index.py` 验证归档内存回收、绝对 ID、v2 迁移、索引增量更新/缺失/损坏重建、短词游标、Unicode 偏移和并发读取。2026-10-26 本机离线小实验中，1002 组历史归档后 session 仅驻留 2 组（原文约 4.23 MB，活跃内容 88 bytes；不代表进程 RSS）。相同稀有关键词查询 20 次，旧遍历序列化约 675 ms、trigram 索引约 13 ms；首次建索引约 143 ms，已有索引恢复约 1.3 ms。结果只代表这个合成样本，不保证其他查询或设备的速度。
 
 2026-10-25 的一次真实 DeepSeek 小样本保留了“17 天改为 23 天”的纠正并通过召回/恢复检查，估算输入从 2386 降至 560 token；实际摘要请求为 1371 input / 170 output tokens。这是接口烟雾测试，不是长期记忆准确率结论。
 

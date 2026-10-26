@@ -4,6 +4,7 @@ from copy import deepcopy
 from threading import Lock
 import json
 from ajagent.options import DEFAULTS, RUNTIME
+from ajagent.memory.history import ActiveGroups
 from ajagent.context.compaction import ContextError, SECTIONS, fingerprint, summarize, summary_request, validate_pairs
 
 
@@ -29,12 +30,29 @@ class ContextBuilder:
 
     def bind(self, session):
         self._session = session
+        if session.groups.start > self.covered:
+            self.restore(session.checkpoint, session.groups)
 
     def _count(self, value):
         return estimate(value, self.options.estimated_bytes_per_token)
 
-    def _version(self, groups):
-        return fingerprint([groups, self.covered, self.summary, self.episodes])
+    def _version(self):
+        return fingerprint([self.covered, self.summary, self.episodes])
+
+    @staticmethod
+    def _total(groups):
+        return getattr(groups, 'start', 0) + len(groups)
+
+    @staticmethod
+    def _slice(groups, start, end=None):
+        base = getattr(groups, 'start', 0)
+        if start < base:
+            raise ContextError('Requested context predates the resident tail; use history recall.')
+        return groups[start-base:None if end is None else end-base]
+
+    def _evict(self, covered):
+        if self._session:
+            self._session.groups.evict(covered)
 
     def _charge(self, usage):
         with self._lock:
@@ -42,11 +60,22 @@ class ContextBuilder:
                 self.usage[key] += usage.get(key, 0)
 
     def snapshot(self, groups):
-        return {'format': 2, 'summary': self.summary, 'summarized_groups': self.covered,
-                'episodes': deepcopy(self.episodes), 'prefix_hash': fingerprint(groups[:self.covered])}
+        return {'format': 3 if self._session else 2, 'summary': self.summary, 'summarized_groups': self.covered,
+                'episodes': deepcopy(self.episodes), 'prefix_hash': self._session.history.prefix_hash(self.covered)
+                if self._session else fingerprint(groups[:self.covered])}
 
     def restore(self, checkpoint, groups):
         covered = checkpoint.get('summarized_groups', 0)
+        if self._session and self._session.history.valid_checkpoint(checkpoint, self._session.group_count):
+            self.covered, self.summary = covered, checkpoint.get('summary', '')
+            self.episodes = deepcopy(checkpoint.get('episodes', []))
+            self._evict(covered)
+            return
+        if isinstance(groups, ActiveGroups) and groups.start:
+            raise ContextError('Checkpoint does not match the resident history boundary.')
+        if checkpoint.get('format') == 3:
+            self.diagnostics.append('checkpoint_mismatch: using raw history')
+            return
         if checkpoint.get('format') != 2:
             # Legacy summaries are hints; re-index original groups on the next pass.
             self.summary = checkpoint.get('summary', '')
@@ -74,19 +103,22 @@ class ContextBuilder:
 
     def _persist(self, groups, covered, summary, episodes):
         if self._session:
-            self._session.append({'event': 'context', 'format': 2, 'summary': summary,
-                                  'summarized_groups': covered, 'episodes': episodes,
-                                  'prefix_hash': fingerprint(groups[:covered])})
+            checkpoint = {'event': 'context', 'format': 3, 'summary': summary,
+                          'summarized_groups': covered, 'episodes': deepcopy(episodes),
+                          'prefix_hash': self._session.history.prefix_hash(covered)}
+            self._session.append(checkpoint)
             self._session.flush()
+            self._session.checkpoint = checkpoint
 
     def handoff(self, text, groups):
         """Task state replaces working state, never the recallable source history."""
         episodes = list(self.episodes)
-        if len(groups) > self.covered:
-            episodes.append({'start': self.covered, 'end': len(groups),
-                             'hash': fingerprint(groups[self.covered:]), 'state': {}, 'kind': 'task'})
-        self._persist(groups, len(groups), text, episodes)
-        self.episodes, self.covered, self.summary = episodes, len(groups), text
+        if self._total(groups) > self.covered:
+            episodes.append({'start': self.covered, 'end': self._total(groups),
+                             'hash': fingerprint(self._slice(groups, self.covered)), 'state': {}, 'kind': 'task'})
+        self._persist(groups, self._total(groups), text, episodes)
+        self.episodes, self.covered, self.summary = episodes, self._total(groups), text
+        self._evict(self.covered)
 
     def _state_text(self, episodes):
         # Selection is deterministic. Older records remain frozen, never re-summarized.
@@ -112,12 +144,12 @@ class ContextBuilder:
                            + '\nNew user corrections override older claims. Recall exact evidence before relying on old details.'})
         current = next((i for i in range(len(groups)-1, -1, -1)
                         if groups[i] and groups[i][0].get('role') == 'user'), None)
-        if current is not None and current < covered:
+        if current is not None and current + getattr(groups, 'start', 0) < covered:
             prefix.extend(deepcopy(groups[current]))
         if self.current_request and not any(item.get('role') == 'user' and item.get('content') == self.current_request
-                                            for item in prefix + [item for group in groups[covered:] for item in group]):
+                                            for item in prefix + [item for group in self._slice(groups, covered) for item in group]):
             prefix.append({'role': 'user', 'content': self.current_request})
-        recent = deepcopy(groups[covered:])
+        recent = deepcopy(self._slice(groups, covered))
         result = prefix + [item for group in recent for item in group]
         definitions = [tool.definition() for tool in tools]
         if self._count([result, definitions]) > self.budget * self.options.hard_ratio:
@@ -131,10 +163,10 @@ class ContextBuilder:
 
     def _propose(self, groups, model, start=None):
         start = self.covered if start is None else start
-        end = len(groups) - self.options.recent_groups
+        end = self._total(groups) - self.options.recent_groups
         if end <= start:
             raise ContextError('Recent messages exceed context budget; history is intact.')
-        older = groups[start:end]
+        older = self._slice(groups, start, end)
         # Bound each request; long histories are compacted in successive raw episodes.
         chosen = []
         for group in older:
@@ -159,50 +191,55 @@ class ContextBuilder:
             raise ContextError('Summary did not reduce context; original history is intact.')
         self._persist(groups, episode['end'], summary, episodes)
         self.episodes, self.summary, self.covered = episodes, summary, episode['end']
+        self._evict(self.covered)
         self.diagnostics.append('committed')
 
-    def poll(self, system, groups, tools, wait=False):
-        if not self._pending or (not wait and not self._pending[1].done()):
+    def poll(self, system, groups, tools, wait=False, adopt=False):
+        # A ready proposal stays parked until the hard threshold requests adoption.
+        if not adopt or not self._pending or (not wait and not self._pending[1].done()):
             return
         version, future = self._pending
         try:
             episode = future.result()
-            if version != self._version(groups):
+            if (version != self._version() or episode['start'] != self.covered
+                    or episode['end'] > self._total(groups)
+                    or episode['hash'] != fingerprint(self._slice(groups, episode['start'], episode['end']))):
                 self.diagnostics.append('stale_discarded')
             else:
                 self._commit(episode, system, groups, tools)
         except Exception as error:
             self.diagnostics.append(type(error).__name__ + ': ' + str(error))
-            self._failed_version = version
+            self._failed_version = fingerprint([self._version(), self._slice(groups, self.covered)])
         finally:
             self._pending = None
 
     def build(self, system, groups, model, tools):
-        validate_pairs(groups[self.covered:])
-        self.poll(system, groups, tools)
+        validate_pairs(self._slice(groups, self.covered))
         definitions = [tool.definition() for tool in tools]
         pack = lambda: self._pack(system, groups, tools)
         size = lambda: self._count([pack(), definitions])
         if self.options.summarization_enabled:
             if size() >= self.budget * self.options.hard_ratio:
-                self.poll(system, groups, tools, wait=True)
-                while size() >= self.budget * self.options.hard_ratio and len(groups)-self.covered > self.options.recent_groups:
+                self.poll(system, groups, tools, wait=True, adopt=True)
+                while size() >= self.budget * self.options.hard_ratio and self._total(groups)-self.covered > self.options.recent_groups:
                     self._commit(self._propose(groups, model), system, groups, tools)
             elif (size() >= self.budget * self.options.soft_ratio and self.options.speculative
-                  and self._pending is None and self._failed_version != self._version(groups)
-                  and len(groups)-self.covered > self.options.recent_groups):
+                  and self._pending is None and self._failed_version != fingerprint([self._version(), self._slice(groups, self.covered)])
+                  and self._total(groups)-self.covered > self.options.recent_groups):
                 if self._pool is None:
                     self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='compaction')
                 # The worker only reads this snapshot and returns a proposal.
-                snapshot = deepcopy(groups)
-                self._pending = (self._version(groups), self._pool.submit(self._propose, snapshot, model, self.covered))
+                snapshot = ActiveGroups(deepcopy(self._slice(groups, self.covered)), self.covered)
+                self._pending = (self._version(), self._pool.submit(self._propose, snapshot, model, self.covered))
                 self.diagnostics.append('speculative_started')
         if size() > self.budget:
             reason = 'summarization is disabled' if not self.options.summarization_enabled else 'recent context cannot fit'
             raise ContextError(f'Context exceeds budget: {reason}; history is intact.')
         self.stats = {'input_tokens': size(), 'estimated': True, 'input_budget': self.budget,
                       'summarized_groups': self.covered, 'history_version': fingerprint(groups),
-                      'episodes': len(self.episodes), 'compaction_pending': self._pending is not None,
+                      'episodes': len(self.episodes), 'active_groups': self._total(groups)-self.covered, 'group_count': self._total(groups),
+                      'compaction_pending': self._pending is not None,
+                      'compaction_state': ('ready' if self._pending[1].done() else 'preparing') if self._pending else 'idle',
                       'compaction_events': self.diagnostics[-self.options.visible_episodes:]}
         return pack()
 
